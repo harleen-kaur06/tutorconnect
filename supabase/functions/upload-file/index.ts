@@ -148,6 +148,9 @@ Deno.serve(async (req) => {
       if (!hw || hw.student_id !== userId) return json({ error: "This homework is not assigned to you." }, 403);
       tutorId = hw.tutor_id;
       studentId = userId;
+      const { data: reviewed } = await service.from("submissions").select("id")
+        .eq("homework_id", homeworkId).not("reviewed_at", "is", null).limit(1);
+      if (reviewed?.length) return json({ error: "This homework has already been reviewed, so it can't be changed." }, 403);
     } else {
       return json({ error: "Unknown upload type." }, 400);
     }
