@@ -1,4 +1,4 @@
-# TutorConnect
+# Harleen Tutoring Portal
 
 A lightweight tutoring portal prototype designed for GitHub Pages + Supabase.
 
