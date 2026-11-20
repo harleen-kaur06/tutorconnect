@@ -48,16 +48,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Supabase CLI
-        uses: supabase/setup-cli@v1
+      # Use the CLI from npm instead of supabase/setup-cli: setup-cli resolves
+      # "latest" through the GitHub API, which is rate limited on shared runners.
+      - uses: actions/setup-node@v4
         with:
-          version: latest
+          node-version: 22
 
       # Use the IPv4-compatible session pooler
       # to avoid IPv6 connectivity issues.
       - name: Apply database migrations
         run: |
-          supabase db push \
+          npx --yes supabase@latest db push \
             --remote="$SUPABASE_DB_URL" \
             --yes
         env:
@@ -67,12 +68,12 @@ jobs:
       # Deploy Edge Functions
       - name: Deploy Google Calendar Edge Functions
         run: |
-          supabase functions deploy google-auth-start --project-ref "$SUPABASE_PROJECT_REF" --yes
-          supabase functions deploy google-oauth-callback --project-ref "$SUPABASE_PROJECT_REF" --yes
-          supabase functions deploy google-calendar-status --project-ref "$SUPABASE_PROJECT_REF" --yes
-          supabase functions deploy create-class --project-ref "$SUPABASE_PROJECT_REF" --yes
-          supabase functions deploy upload-file --project-ref "$SUPABASE_PROJECT_REF" --yes
-          supabase functions deploy download-file --project-ref "$SUPABASE_PROJECT_REF" --yes
+          npx --yes supabase@latest functions deploy google-auth-start --project-ref "$SUPABASE_PROJECT_REF" --yes
+          npx --yes supabase@latest functions deploy google-oauth-callback --project-ref "$SUPABASE_PROJECT_REF" --yes
+          npx --yes supabase@latest functions deploy google-calendar-status --project-ref "$SUPABASE_PROJECT_REF" --yes
+          npx --yes supabase@latest functions deploy create-class --project-ref "$SUPABASE_PROJECT_REF" --yes
+          npx --yes supabase@latest functions deploy upload-file --project-ref "$SUPABASE_PROJECT_REF" --yes
+          npx --yes supabase@latest functions deploy download-file --project-ref "$SUPABASE_PROJECT_REF" --yes
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
