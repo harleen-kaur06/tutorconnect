@@ -46,37 +46,12 @@ function App(){
       setStudents(st||[])
     }
   }
-  async function auth(action) {
-  if (!supabase) {
-    setNotice('Demo mode: connect Supabase to enable real accounts and shared data.');
-    return;
+  async function auth(action){
+    if(!supabase){setNotice('Demo mode: connect Supabase to enable real accounts and shared data.');return}
+    setBusy(true)
+    const result=action==='signup'?await supabase.auth.signUp({email,password,options:{data:{role},emailRedirectTo: '${window.location.origin}${import.meta.env.BASE_URL}'}}):await supabase.auth.signInWithPassword({email,password})
+    setBusy(false);setNotice(result.error?.message || (action==='signup'?'Account created. Check your email for confirmation.':'Signed in successfully.'))
   }
-
-  setBusy(true);
-
-  const result = action === 'signup'
-    ? await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { role },
-          emailRedirectTo: `${window.location.origin}${import.meta.env.BASE_URL}`
-        }
-      })
-    : await supabase.auth.signInWithPassword({
-        email,
-        password
-      });
-
-  setBusy(false);
-
-  setNotice(
-    result.error?.message ||
-    (action === 'signup'
-      ? 'Account created. Check your email for confirmation.'
-      : 'Signed in successfully.')
-  );
-}
   async function signOut(){if(supabase) await supabase.auth.signOut();setSession(null);setProfile(null)}
   async function addClass(e){
     e.preventDefault()
