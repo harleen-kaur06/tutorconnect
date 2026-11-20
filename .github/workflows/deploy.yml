@@ -71,6 +71,8 @@ jobs:
           supabase functions deploy google-oauth-callback --project-ref "$SUPABASE_PROJECT_REF" --yes
           supabase functions deploy google-calendar-status --project-ref "$SUPABASE_PROJECT_REF" --yes
           supabase functions deploy create-class --project-ref "$SUPABASE_PROJECT_REF" --yes
+          supabase functions deploy upload-file --project-ref "$SUPABASE_PROJECT_REF" --yes
+          supabase functions deploy download-file --project-ref "$SUPABASE_PROJECT_REF" --yes
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}

@@ -57,7 +57,7 @@ Deno.serve(async (req) => {
       access_type: "offline",
       prompt: "consent",
       include_granted_scopes: "true",
-      scope: "openid email https://www.googleapis.com/auth/calendar.events",
+      scope: "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive",
       state,
     });
 

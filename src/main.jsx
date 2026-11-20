@@ -13,6 +13,16 @@ const sample = {
   homework: [{id:'h1',title:'Fractions practice',description:'Complete questions 1–10 and upload a photo or PDF.',due_date:new Date(Date.now()+3*86400000).toISOString().slice(0,10),file_url:'',status:'published'}],
   submissions: []
 }
+const ALLOWED_EXT=['pdf','doc','docx','jpg','jpeg','png']
+const FILE_ACCEPT='.pdf,.doc,.docx,.jpg,.jpeg,.png'
+const MAX_FILE_MB=10
+function validateFile(file){
+  const ext=(file.name.split('.').pop()||'').toLowerCase()
+  if(!ALLOWED_EXT.includes(ext)) return 'Only PDF, DOC, DOCX, JPG and PNG files are allowed.'
+  if(file.size>MAX_FILE_MB*1024*1024) return `File is too large. Maximum size is ${MAX_FILE_MB} MB.`
+  return ''
+}
+const safeName=(n)=>n.replace(/[^A-Za-z0-9._-]+/g,'_')
 async function fnErrorMessage(error,data){
   if(data?.error) return data.error
   try{ const body=await error?.context?.json?.(); if(body?.error) return body.error }catch{}
@@ -33,7 +43,7 @@ function App(){
   const [showClass,setShowClass]=useState(false), [showHw,setShowHw]=useState(false)
   const [email,setEmail]=useState(''), [password,setPassword]=useState('')
   const [classForm,setClassForm]=useState({title:'',starts_at:'',student_email:'',duration_minutes:'60'})
-  const [hwForm,setHwForm]=useState({title:'',description:'',due_date:'',student_email:''})
+  const [hwForm,setHwForm]=useState({title:'',description:'',due_date:'',student_email:''}), [hwFile,setHwFile]=useState(null), [hwFileError,setHwFileError]=useState('')
   const [feedback,setFeedback]=useState({})
   const [uploading,setUploading]=useState(false)
   const [calendarConnected,setCalendarConnected]=useState(false), [calendarEmail,setCalendarEmail]=useState('')
@@ -79,7 +89,9 @@ function App(){
     const {data:c}=await supabase.from('classes').select('*, profiles:student_id(full_name,email)').order('starts_at')
     const {data:h}=await supabase.from('homework').select('*, profiles:student_id(full_name,email)').order('created_at',{ascending:false})
     const {data:s}=await supabase.from('submissions').select('*, homework(title), profiles:student_id(full_name,email)').order('submitted_at',{ascending:false})
-    setClasses(c||[]);setHomework(h||[]);
+    setClasses(c||[])
+    const hwWithLinks = await Promise.all((h||[]).map(async item => { if (!item.file_url) return item; const {data:link}=await supabase.storage.from('homework-files').createSignedUrl(item.file_url, 3600); return {...item, file_url: link?.signedUrl || ''} }))
+    setHomework(hwWithLinks);
     const withLinks = await Promise.all((s||[]).map(async item => { if (!item.file_url) return {...item, file_url: ''}; const {data:link}=await supabase.storage.from('homework-files').createSignedUrl(item.file_url, 3600); return {...item, file_url:link?.signedUrl || ''} }))
     setSubs(withLinks)
     if(p?.role==='tutor'){
@@ -115,25 +127,56 @@ function App(){
     setClassForm({title:'',starts_at:'',student_email:'',duration_minutes:'60'})
     await loadData()
   }
+  function closeHw(){setShowHw(false);setHwForm({title:'',description:'',due_date:'',student_email:''});setHwFile(null);setHwFileError('')}
   async function addHomework(e){
     e.preventDefault()
-    if(!supabase){setHomework([...homework,{...hwForm,id:crypto.randomUUID(),status:'published'}]);setShowHw(false);setNotice('Demo homework published.');return}
+    if(hwFile){const problem=validateFile(hwFile); if(problem){setHwFileError(problem);return}}
+    if(!supabase){setHomework([...homework,{...hwForm,id:crypto.randomUUID(),status:'published',file_url:''}]);closeHw();setNotice('Demo homework published.');return}
+    if(!hwForm.student_email){setNotice('Select a student.');return}
+    setBusy(true)
     const {data:student}=await supabase.from('profiles').select('id').eq('email',hwForm.student_email).single()
-    if(!student){setNotice('Student email not found. Ask the student to create an account first.');return}
-    const {error}=await supabase.from('homework').insert({title:hwForm.title,description:hwForm.description,due_date:hwForm.due_date,student_id:student.id,tutor_id:session.user.id})
-    setNotice(error?.message||'Homework published.');setShowHw(false);loadData()
+    if(!student){setBusy(false);setNotice('Student not found. Ask the student to create an account first.');return}
+    let failure=''
+    if(hwFile){
+      // File is saved to the tutor's Google Drive by the upload-file Edge Function, which also creates the homework row.
+      const fd=new FormData()
+      fd.append('kind','homework'); fd.append('file',hwFile); fd.append('student_id',student.id)
+      fd.append('title',hwForm.title); fd.append('description',hwForm.description); fd.append('due_date',hwForm.due_date||'')
+      const {data,error}=await supabase.functions.invoke('upload-file',{body:fd})
+      if(error||data?.error){setBusy(false);setHwFileError(await fnErrorMessage(error,data));return}
+    }else{
+      const {error}=await supabase.from('homework').insert({title:hwForm.title,description:hwForm.description,due_date:hwForm.due_date||null,student_id:student.id,tutor_id:session.user.id})
+      failure=error?.message||''
+    }
+    setBusy(false)
+    setNotice(failure||'Homework published.')
+    if(!failure) closeHw()
+    loadData()
   }
   async function submitWork(hw,file){
     if(!supabase){setNotice('Demo mode: connect Supabase to submit files across devices.');return}
     if(!file)return
+    const problem=validateFile(file)
+    if(problem){setNotice(problem);return}
     setUploading(true)
-    const path=`${session.user.id}/${Date.now()}-${file.name}`
-    const {error:upErr}=await supabase.storage.from('homework-files').upload(path,file)
-    if(!upErr){
-      const {error}=await supabase.from('submissions').insert({homework_id:hw.id,student_id:session.user.id,file_url:path})
-      setNotice(error?.message||'Homework submitted.')}
-    else setNotice(upErr.message)
-    setUploading(false);loadData()
+    const fd=new FormData()
+    fd.append('kind','submission'); fd.append('homework_id',hw.id); fd.append('file',file)
+    const {data,error}=await supabase.functions.invoke('upload-file',{body:fd})
+    setUploading(false)
+    if(error||data?.error){setNotice(await fnErrorMessage(error,data));return}
+    setNotice('Homework submitted.')
+    loadData()
+  }
+  async function openDriveFile(kind,id,name,mime){
+    const inline=/pdf|image/.test(mime||'')
+    const w=inline?window.open('','_blank'):null
+    setNotice('Opening file…')
+    const {data,error}=await supabase.functions.invoke('download-file',{body:{kind,id}})
+    if(error||!(data instanceof Blob)){ if(w)w.close(); setNotice(await fnErrorMessage(error,data)); return }
+    const url=URL.createObjectURL(new Blob([data],{type:mime||'application/octet-stream'}))
+    if(w){ w.location.href=url } else { const a=document.createElement('a'); a.href=url; a.download=name||'file'; a.click() }
+    setNotice('')
+    setTimeout(()=>URL.revokeObjectURL(url),60000)
   }
   async function saveFeedback(s){
     if(!supabase){setNotice('Feedback saved in demo preview only.');return}
@@ -150,12 +193,12 @@ function App(){
   {notice&&<div className="notice" onClick={()=>setNotice('')}>{notice} <span>×</span></div>}
   {tab==='overview'&&<><section className="welcome"><div><p className="eyebrow light">WELCOME TO HARLEEN TUTORING PORTAL</p><h2>{isTutor?'Make every lesson count.':'Your next learning step starts here.'}</h2><p>{isTutor?'Keep classes, assignments and student progress in one simple place.':'Find your classes, complete homework and get feedback from your tutor.'}</p></div><GraduationCap size={74}/></section><div className="stats"><Stat label="Upcoming classes" value={upcoming.length} icon={<CalendarDays/>}/><Stat label="Homework" value={homework.length} icon={<ClipboardCheck/>}/><Stat label={isTutor?'Submissions to review':'Feedback received'} value={isTutor?subs.filter(s=>!s.reviewed_at).length:subs.filter(s=>s.reviewed_at).length} icon={<MessageSquare/>}/></div><div className="sectionhead"><h2>Coming up</h2><button className="textbtn" onClick={()=>setTab('classes')}>View all</button></div><ClassList classes={upcoming.slice(0,3)}/></>}
   {tab==='classes'&&<><div className="sectionhead"><h2>{isTutor?'Scheduled sessions':'Your sessions'}</h2>{isTutor&&<button onClick={()=>setShowClass(true)}><Plus size={16}/> New class</button>}</div><ClassList classes={classes}/></>}
-  {tab==='homework'&&<><div className="sectionhead"><h2>{isTutor?'Assignments shared':'Your assignments'}</h2>{isTutor&&<button onClick={()=>setShowHw(true)}><Plus size={16}/> Create homework</button>}</div><div className="cards">{homework.map(hw=><article className="card" key={hw.id}><div className="cardtop"><span className="tag">ASSIGNMENT</span><span className="muted small">Due {hw.due_date||'No deadline'}</span></div><h3>{hw.title}</h3><p>{hw.description}</p>{hw.file_url&&<a href={hw.file_url} target="_blank" rel="noreferrer">Open attached resource <ExternalLink size={14}/></a>}{!isTutor&&<label className="upload"> <Upload size={16}/>{uploading?'Uploading…':'Upload completed work'}<input type="file" accept=".pdf,.png,.jpg,.jpeg,.doc,.docx" onChange={e=>submitWork(hw,e.target.files?.[0])}/></label>}</article>)}</div></>}
+  {tab==='homework'&&<><div className="sectionhead"><h2>{isTutor?'Assignments shared':'Your assignments'}</h2>{isTutor&&<button onClick={()=>setShowHw(true)}><Plus size={16}/> Create homework</button>}</div><div className="cards">{homework.map(hw=><article className="card" key={hw.id}><div className="cardtop"><span className="tag">ASSIGNMENT</span><span className="muted small">Due {hw.due_date||'No deadline'}</span></div><h3>{hw.title}</h3><p>{hw.description}</p>{hw.drive_file_id&&<button className="secondary" onClick={()=>openDriveFile('homework',hw.id,hw.file_name,hw.file_mime)}>Open attachment{hw.file_name?` · ${hw.file_name}`:''} <ExternalLink size={14}/></button>}{hw.file_url&&<a href={hw.file_url} target="_blank" rel="noreferrer">Open attached resource <ExternalLink size={14}/></a>}{!isTutor&&<label className="upload"> <Upload size={16}/>{uploading?'Uploading…':'Upload completed work (PDF, DOC, JPG, PNG)'}<input type="file" accept={FILE_ACCEPT} onChange={e=>{const f=e.target.files?.[0];e.target.value='';submitWork(hw,f)}}/></label>}</article>)}</div></>}
   {tab==='students'&&<><div className="sectionhead"><h2>Your students</h2></div><div className="card">{students.length?students.map(s=><div className="studentrow" key={s.id}><span className="avatar">S</span><div><b>{s.full_name||'Student'}</b><p>{s.email}</p></div></div>):<Empty text="Students appear here after they create an account."/>}</div></>}
-  {tab==='reviews'&&<><div className="sectionhead"><h2>Student submissions</h2></div><div className="cards">{subs.map(s=><article className="card" key={s.id}><span className="tag">{s.reviewed_at?'REVIEWED':'NEEDS REVIEW'}</span><h3>{s.homework?.title||'Homework submission'}</h3><p>{s.profiles?.full_name||s.profiles?.email||'Student'} · {new Date(s.submitted_at).toLocaleDateString()}</p><a href={s.file_url} target="_blank" rel="noreferrer">View submitted file <ExternalLink size={14}/></a><textarea placeholder="Write feedback for the student…" value={feedback[s.id]??s.feedback??''} onChange={e=>setFeedback({...feedback,[s.id]:e.target.value})}/><button onClick={()=>saveFeedback(s)}>Send feedback</button></article>)}{!subs.length&&<Empty text="No submissions yet. They will appear here when students upload work."/>}</div></>}
+  {tab==='reviews'&&<><div className="sectionhead"><h2>Student submissions</h2></div><div className="cards">{subs.map(s=><article className="card" key={s.id}><span className="tag">{s.reviewed_at?'REVIEWED':'NEEDS REVIEW'}</span><h3>{s.homework?.title||'Homework submission'}</h3><p>{s.profiles?.full_name||s.profiles?.email||'Student'} · {new Date(s.submitted_at).toLocaleDateString()}</p>{s.drive_file_id&&<button className="secondary" onClick={()=>openDriveFile('submission',s.id,s.file_name,s.file_mime)}>View submitted file{s.file_name?` · ${s.file_name}`:''} <ExternalLink size={14}/></button>}{s.file_url&&<a href={s.file_url} target="_blank" rel="noreferrer">View submitted file <ExternalLink size={14}/></a>}<textarea placeholder="Write feedback for the student…" value={feedback[s.id]??s.feedback??''} onChange={e=>setFeedback({...feedback,[s.id]:e.target.value})}/><button onClick={()=>saveFeedback(s)}>Send feedback</button></article>)}{!subs.length&&<Empty text="No submissions yet. They will appear here when students upload work."/>}</div></>}
   </main>
   {showClass&&<Modal title="Schedule a class" close={()=>setShowClass(false)}><form onSubmit={addClass}><label>Class title<input required value={classForm.title} onChange={e=>setClassForm({...classForm,title:e.target.value})} placeholder="e.g. Grade 6 Mathematics"/></label><label>Date and time<input required type="datetime-local" min={new Date().toISOString().slice(0,16)} value={classForm.starts_at} onChange={e=>setClassForm({...classForm,starts_at:e.target.value})}/></label>{!demo&&<label>Student<select required value={classForm.student_email} onChange={e=>setClassForm({...classForm,student_email:e.target.value})}><option value="">{students.length?'Select a student…':'No students registered yet'}</option>{students.map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Lesson duration<select value={classForm.duration_minutes} onChange={e=>setClassForm({...classForm,duration_minutes:e.target.value})}><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label><p className="hint">A Google Calendar event and a unique Google Meet link will be created automatically. The student will receive a calendar invitation by email.</p><button type="submit" disabled={busy || (!demo && !calendarConnected)}>{busy?'Creating…':'Create class & Meet link'}</button>{!demo&&!calendarConnected&&<p className="hint">Connect Google Calendar using the button at the top of the dashboard first.</p>}</form></Modal>}
-  {showHw&&<Modal title="Create homework" close={()=>setShowHw(false)}><form onSubmit={addHomework}><label>Assignment title<input required value={hwForm.title} onChange={e=>setHwForm({...hwForm,title:e.target.value})} placeholder="e.g. Fractions worksheet"/></label><label>Instructions<textarea required value={hwForm.description} onChange={e=>setHwForm({...hwForm,description:e.target.value})} placeholder="Explain what the student needs to complete…"/></label><label>Due date<input type="date" value={hwForm.due_date} onChange={e=>setHwForm({...hwForm,due_date:e.target.value})}/></label>{!demo&&<label>Student email<input required type="email" value={hwForm.student_email} onChange={e=>setHwForm({...hwForm,student_email:e.target.value})}/></label>}<button type="submit">Publish homework</button></form></Modal>}
+  {showHw&&<Modal title="Create homework" close={closeHw}><form onSubmit={addHomework}><label>Assignment title<input required value={hwForm.title} onChange={e=>setHwForm({...hwForm,title:e.target.value})} placeholder="e.g. Fractions worksheet"/></label><label>Instructions<textarea required value={hwForm.description} onChange={e=>setHwForm({...hwForm,description:e.target.value})} placeholder="Explain what the student needs to complete…"/></label><label>Due date<input type="date" value={hwForm.due_date} onChange={e=>setHwForm({...hwForm,due_date:e.target.value})}/></label>{!demo&&<label>Student<select required value={hwForm.student_email} onChange={e=>setHwForm({...hwForm,student_email:e.target.value})}><option value="">{students.length?'Select a student…':'No students registered yet'}</option>{students.map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Attach a file (optional)<input type="file" accept={FILE_ACCEPT} onChange={e=>{const f=e.target.files?.[0]||null;if(f){const p=validateFile(f);if(p){setHwFileError(p);setHwFile(null);e.target.value='';return}}setHwFileError('');setHwFile(f)}}/></label><p className="hint">PDF, DOC, DOCX, JPG or PNG · max 10 MB · saved to your Google Drive{hwFile?` · Selected: ${hwFile.name}`:''}</p>{hwFileError&&<p className="hint" style={{color:'#b3261e'}}>{hwFileError}</p>}<button type="submit" disabled={busy}>{busy?'Publishing…':'Publish homework'}</button></form></Modal>}
   </div>
 }
 
@@ -221,8 +264,8 @@ function PrivacyContent(){return <article className="legal-content">
   <h2>1. About this policy</h2><p>This Privacy Policy explains how Harleen Tutoring Portal (“we”, “us” or “the platform”) may collect, use, disclose and protect information when tutors and students use the website and learning portal.</p>
   <h2>2. Information we handle</h2><p>Depending on how you use the platform, information may include:</p><ul><li>Account email and authentication information managed through Supabase.</li><li>Profile information such as name and account role (tutor or student).</li><li>Learning information such as class titles, scheduled dates, tutor-student associations, homework instructions, due dates and feedback.</li><li>Files uploaded as homework submissions and related file references.</li><li>Information associated with Google Calendar integration, if you choose to connect a Google account.</li><li>Basic technical information that may be recorded by the website host or service providers.</li></ul>
   <h2>3. How information is used</h2><p>Information is used to create and manage accounts, display the appropriate portal, organize lessons, share assignments, receive submitted work, provide feedback, support Google Calendar features, maintain platform security and respond to support requests.</p>
-  <h2>4. Google Calendar</h2><p>If you connect Google Calendar, Google may ask you to authorize the permissions displayed during consent. Google information should be used only for the features and purposes described at authorization, such as calendar scheduling or meeting functions. You can review or revoke third-party access in your Google Account settings. This section must be checked against the exact OAuth scopes and token-handling implementation before launch.</p>
-  <h2>5. Service providers and sharing</h2><p>Information may be processed by providers supporting the platform, including Supabase for authentication, database and file storage, Google for services you authorize, and the website hosting provider. Relevant learning information may be visible to the tutor or student involved in that tutoring relationship. The operator must confirm its actual practices and applicable legal obligations.</p>
+  <h2>4. Google Calendar and Drive</h2><p>Homework files uploaded through the platform are stored in the tutor’s Google Drive and made available only to the tutor and the student concerned through the portal.</p><p>If you connect Google Calendar, Google may ask you to authorize the permissions displayed during consent. Google information should be used only for the features and purposes described at authorization, such as calendar scheduling or meeting functions. You can review or revoke third-party access in your Google Account settings. This section must be checked against the exact OAuth scopes and token-handling implementation before launch.</p>
+  <h2>5. Service providers and sharing</h2><p>Information may be processed by providers supporting the platform, including Supabase for authentication and the database, Google Drive (the tutor’s account) for homework files, Google for services you authorize, and the website hosting provider. Relevant learning information may be visible to the tutor or student involved in that tutoring relationship. The operator must confirm its actual practices and applicable legal obligations.</p>
   <h2>6. Security and retention</h2><p>The platform uses service providers and measures intended to protect information, but no online service can guarantee absolute security. The operator should define and publish specific retention, backup and deletion procedures before public launch.</p>
   <h2>7. Your choices and requests</h2><p>You may request access to, correction of or deletion of personal information by contacting the Harleen Tutoring Portal operator. Some information may need to be retained where required by law or for legitimate recordkeeping. You can choose not to connect Google Calendar, although calendar-related features may then be unavailable.</p>
   <h2>8. Children and student accounts</h2><p>Where school-age students use Harleen Tutoring Portal, a parent or legal guardian should review the service and provide any consent required by applicable law. Users should avoid entering unnecessary sensitive information about a student. The operator must establish age-appropriate account, consent and safeguarding practices before accepting accounts from minors.</p>

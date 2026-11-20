@@ -55,3 +55,13 @@ This is an MVP starter, not a production-ready student information system. Add t
 - `#/portal` existing tutor/student portal
 
 Before public launch, review and complete the legal policy placeholders, confirm Google OAuth scopes and actual data handling, add a monitored support contact, and obtain appropriate legal review.
+
+
+## Homework files in Google Drive
+Homework attachments and student submissions are stored in the tutor's Google Drive under
+`<root folder>/<Student name>/Homework assigned` and `.../Homework submitted` (files are prefixed with the date).
+Setup:
+1. Enable the **Google Drive API** in the same Google Cloud project as the Calendar API, and add the `.../auth/drive` scope to the OAuth consent screen.
+2. In Supabase → Edge Functions → Secrets add `DRIVE_ROOT_FOLDER_ID` (the ID at the end of the Drive folder URL).
+3. Run the migration `202611200002_drive_storage.sql` (the GitHub workflow does this on push).
+4. The tutor clicks **Connect Google Calendar** once more to grant Drive access. Use the Google account that owns/edits the root folder.
