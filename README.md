@@ -46,3 +46,12 @@ Create a Calendar event in Google Calendar, add the student as a guest, enable G
 
 ## Before using with real students
 This is an MVP starter, not a production-ready student information system. Add tutor invitation/approval, stronger file access controls, rate limiting, backups, privacy policy, terms, data deletion workflow, and testing. Avoid collecting unnecessary student personal information. If students are minors, obtain appropriate parent/guardian consent and use age-appropriate account and data practices.
+
+
+## Public website pages added
+- `#/` public homepage
+- `#/privacy` privacy policy draft
+- `#/terms` terms of service draft
+- `#/portal` existing tutor/student portal
+
+Before public launch, review and complete the legal policy placeholders, confirm Google OAuth scopes and actual data handling, add a monitored support contact, and obtain appropriate legal review.

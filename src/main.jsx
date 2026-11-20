@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createClient } from '@supabase/supabase-js'
-import { CalendarDays, Users, BookOpen, ClipboardCheck, LogOut, Plus, ExternalLink, Upload, MessageSquare, Clock, GraduationCap } from 'lucide-react'
+import { CalendarDays, Users, BookOpen, ClipboardCheck, LogOut, Plus, ExternalLink, Upload, MessageSquare, Clock, GraduationCap, ShieldCheck, FileText, ArrowRight, CheckCircle2 } from 'lucide-react'
 import './style.css'
 
 const url = import.meta.env.VITE_SUPABASE_URL
@@ -14,6 +14,13 @@ const sample = {
   submissions: []
 }
 function App(){
+  const [page,setPage]=useState(()=>window.location.hash.replace(/^#\/?/, '') || 'home')
+  const navigate=(next)=>{ window.location.hash = next === 'home' ? '/' : `/${next}`; setPage(next) }
+  useEffect(()=>{
+    const syncPage=()=>setPage(window.location.hash.replace(/^#\/?/, '') || 'home')
+    window.addEventListener('hashchange',syncPage)
+    return ()=>window.removeEventListener('hashchange',syncPage)
+  },[])
   const [session,setSession]=useState(null), [profile,setProfile]=useState(null)
   const [tab,setTab]=useState('overview')
   const [classes,setClasses]=useState([]), [homework,setHomework]=useState([]), [subs,setSubs]=useState([])
@@ -131,11 +138,12 @@ function App(){
   const isTutor=displayRole==='tutor'
   const upcoming=classes.filter(c=>new Date(c.starts_at)>new Date())
   const nav=[['overview','Overview',BookOpen],['classes','Classes',CalendarDays],['homework','Homework',ClipboardCheck],...(isTutor?[['students','Students',Users],['reviews','Submissions',MessageSquare]]:[])]
-  if(!session && !demo) return <main className="auth"><section className="authcard"><div className="brand"><GraduationCap/> Harleen Tutoring Portal</div><h1>Learning, connected.</h1><p className="muted">Sign in or create your tutoring account.</p><label>Email<input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@example.com"/></label><label>Password<input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="At least 8 characters"/></label><div className="actions"><button onClick={()=>auth('signin')} disabled={busy}>Sign in</button><button className="secondary" onClick={()=>auth('signup')} disabled={busy}>Create account</button></div>{notice&&<p className="notice">{notice}</p>}</section></main>
-  return <div className="app"><aside className="sidebar"><div className="brand"><GraduationCap/> Harleen Tutoring Portal</div><div className="workspace">{isTutor?'Tutor workspace':'Student workspace'}</div><nav>{nav.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon size={18}/>{label}</button>)}</nav><div className="sidebottom"><span className="avatar">{isTutor?'T':'S'}</span><div><b>{profile?.full_name|| (demo?'Demo Tutor':session?.user?.email||'Student')}</b><small>{displayRole}</small></div>{!demo&&<button className="iconbtn" onClick={signOut}><LogOut size={17}/></button>}</div></aside>
+  if(page !== 'portal') return <MarketingPage page={page} navigate={navigate}/>
+  if(!session && !demo) return <main className="auth"><section className="authcard"><div className="brand"><GraduationCap/> TutorConnect Portal</div><h1>Learning, connected.</h1><p className="muted">Sign in or create your tutoring account.</p><label>Email<input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@example.com"/></label><label>Password<input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="At least 8 characters"/></label><div className="actions"><button onClick={()=>auth('signin')} disabled={busy}>Sign in</button><button className="secondary" onClick={()=>auth('signup')} disabled={busy}>Create account</button></div>{notice&&<p className="notice">{notice}</p>}</section></main>
+  return <div className="app"><aside className="sidebar"><div className="brand"><GraduationCap/> TutorConnect Portal</div><div className="workspace">{isTutor?'Tutor workspace':'Student workspace'}</div><button className="public-site-link" onClick={()=>navigate('home')}>Visit public website <ExternalLink size={14}/></button><nav>{nav.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon size={18}/>{label}</button>)}</nav><div className="sidebottom"><span className="avatar">{isTutor?'T':'S'}</span><div><b>{profile?.full_name|| (demo?'Demo Tutor':session?.user?.email||'Student')}</b><small>{displayRole}</small></div>{!demo&&<button className="iconbtn" onClick={signOut}><LogOut size={17}/></button>}</div></aside>
   <main className="main"><header><div><div className="eyebrow">YOUR LEARNING SPACE</div><h1>{nav.find(n=>n[0]===tab)?.[1]||'Overview'}</h1></div><div className="header-right"><span className="pill">{demo?'Preview mode':'Connected'}</span>{isTutor&&<><button className="secondary" onClick={connectGoogleCalendar} disabled={connectingCalendar}>{connectingCalendar?'Connecting…':calendarConnected?`Google connected${calendarEmail?' · '+calendarEmail:''}`:'Connect Google Calendar'}</button><button onClick={()=>setShowClass(true)}><Plus size={17}/> Schedule class</button></>}</div></header>
   {notice&&<div className="notice" onClick={()=>setNotice('')}>{notice} <span>×</span></div>}
-  {tab==='overview'&&<><section className="welcome"><div><p className="eyebrow light">WELCOME TO HARLEEN TUTORING PORTAL</p><h2>{isTutor?'Make every lesson count.':'Your next learning step starts here.'}</h2><p>{isTutor?'Keep classes, assignments and student progress in one simple place.':'Find your classes, complete homework and get feedback from your tutor.'}</p></div><GraduationCap size={74}/></section><div className="stats"><Stat label="Upcoming classes" value={upcoming.length} icon={<CalendarDays/>}/><Stat label="Homework" value={homework.length} icon={<ClipboardCheck/>}/><Stat label={isTutor?'Submissions to review':'Feedback received'} value={isTutor?subs.filter(s=>!s.reviewed_at).length:subs.filter(s=>s.reviewed_at).length} icon={<MessageSquare/>}/></div><div className="sectionhead"><h2>Coming up</h2><button className="textbtn" onClick={()=>setTab('classes')}>View all</button></div><ClassList classes={upcoming.slice(0,3)}/></>}
+  {tab==='overview'&&<><section className="welcome"><div><p className="eyebrow light">WELCOME TO TUTORCONNECT</p><h2>{isTutor?'Make every lesson count.':'Your next learning step starts here.'}</h2><p>{isTutor?'Keep classes, assignments and student progress in one simple place.':'Find your classes, complete homework and get feedback from your tutor.'}</p></div><GraduationCap size={74}/></section><div className="stats"><Stat label="Upcoming classes" value={upcoming.length} icon={<CalendarDays/>}/><Stat label="Homework" value={homework.length} icon={<ClipboardCheck/>}/><Stat label={isTutor?'Submissions to review':'Feedback received'} value={isTutor?subs.filter(s=>!s.reviewed_at).length:subs.filter(s=>s.reviewed_at).length} icon={<MessageSquare/>}/></div><div className="sectionhead"><h2>Coming up</h2><button className="textbtn" onClick={()=>setTab('classes')}>View all</button></div><ClassList classes={upcoming.slice(0,3)}/></>}
   {tab==='classes'&&<><div className="sectionhead"><h2>{isTutor?'Scheduled sessions':'Your sessions'}</h2>{isTutor&&<button onClick={()=>setShowClass(true)}><Plus size={16}/> New class</button>}</div><ClassList classes={classes}/></>}
   {tab==='homework'&&<><div className="sectionhead"><h2>{isTutor?'Assignments shared':'Your assignments'}</h2>{isTutor&&<button onClick={()=>setShowHw(true)}><Plus size={16}/> Create homework</button>}</div><div className="cards">{homework.map(hw=><article className="card" key={hw.id}><div className="cardtop"><span className="tag">ASSIGNMENT</span><span className="muted small">Due {hw.due_date||'No deadline'}</span></div><h3>{hw.title}</h3><p>{hw.description}</p>{hw.file_url&&<a href={hw.file_url} target="_blank" rel="noreferrer">Open attached resource <ExternalLink size={14}/></a>}{!isTutor&&<label className="upload"> <Upload size={16}/>{uploading?'Uploading…':'Upload completed work'}<input type="file" accept=".pdf,.png,.jpg,.jpeg,.doc,.docx" onChange={e=>submitWork(hw,e.target.files?.[0])}/></label>}</article>)}</div></>}
   {tab==='students'&&<><div className="sectionhead"><h2>Your students</h2></div><div className="card">{students.length?students.map(s=><div className="studentrow" key={s.id}><span className="avatar">S</span><div><b>{s.full_name||'Student'}</b><p>{s.email}</p></div></div>):<Empty text="Students appear here after they create an account."/>}</div></>}
@@ -145,6 +153,92 @@ function App(){
   {showHw&&<Modal title="Create homework" close={()=>setShowHw(false)}><form onSubmit={addHomework}><label>Assignment title<input required value={hwForm.title} onChange={e=>setHwForm({...hwForm,title:e.target.value})} placeholder="e.g. Fractions worksheet"/></label><label>Instructions<textarea required value={hwForm.description} onChange={e=>setHwForm({...hwForm,description:e.target.value})} placeholder="Explain what the student needs to complete…"/></label><label>Due date<input type="date" value={hwForm.due_date} onChange={e=>setHwForm({...hwForm,due_date:e.target.value})}/></label>{!demo&&<label>Student email<input required type="email" value={hwForm.student_email} onChange={e=>setHwForm({...hwForm,student_email:e.target.value})}/></label>}<button type="submit">Publish homework</button></form></Modal>}
   </div>
 }
+
+function MarketingPage({page,navigate}){
+  const privacy=page==='privacy', terms=page==='terms', legal=privacy||terms
+  return <div className="public-site">
+    <header className="public-nav">
+      <button className="public-brand" onClick={()=>navigate('home')}><span className="brand-mark"><GraduationCap size={23}/></span><span>TutorConnect</span></button>
+      <nav className="public-links">
+        <button onClick={()=>navigate('home')}>Home</button>
+        <button onClick={()=>navigate('privacy')}>Privacy</button>
+        <button onClick={()=>navigate('terms')}>Terms</button>
+      </nav>
+      <button className="portal-button" onClick={()=>navigate('portal')}>Login to Portal <ArrowRight size={16}/></button>
+    </header>
+    {!legal ? <main>
+      <section className="hero-section">
+        <div className="hero-copy">
+          <span className="hero-kicker"><span className="kicker-dot"></span> A simpler way to stay connected</span>
+          <h1>Great learning happens when everyone is <span>in sync.</span></h1>
+          <p className="hero-description">TutorConnect brings tutors and students together with a shared space for lessons, assignments, submissions and feedback.</p>
+          <div className="hero-actions"><button className="portal-button hero-cta" onClick={()=>navigate('portal')}>Login to Portal <ArrowRight size={17}/></button><button className="learn-button" onClick={()=>document.getElementById('how-it-works')?.scrollIntoView({behavior:'smooth'})}>See how it works</button></div>
+          <div className="hero-proof"><CheckCircle2 size={16}/> One organized place for your learning journey</div>
+        </div>
+        <div className="hero-visual">
+          <div className="visual-orbit orbit-one"></div><div className="visual-orbit orbit-two"></div>
+          <div className="visual-card main-visual-card">
+            <div className="visual-card-head"><span className="visual-dot"></span><span>YOUR LEARNING SPACE</span><span className="visual-menu">•••</span></div>
+            <div className="visual-welcome">Welcome back!</div><div className="visual-subtitle">Your next steps, all in one place.</div>
+            <div className="visual-stat-row"><div className="visual-stat"><CalendarDays/><b>Classes</b><small>Stay on schedule</small></div><div className="visual-stat"><BookOpen/><b>Homework</b><small>Keep learning</small></div></div>
+            <div className="visual-task"><span className="task-icon"><ClipboardCheck size={17}/></span><span><b>Learning progress</b><small>Assignments and feedback</small></span><CheckCircle2 className="task-check"/></div>
+          </div>
+          <div className="floating-note note-top"><span className="note-icon"><Users size={17}/></span><span><b>Connected learning</b><small>Tutor + student</small></span></div>
+          <div className="floating-note note-bottom"><span className="note-icon note-purple"><MessageSquare size={17}/></span><span><b>Helpful feedback</b><small>Keep improving</small></span></div>
+        </div>
+      </section>
+      <section className="feature-section" id="features">
+        <div className="section-intro"><span className="section-kicker">MADE FOR LEARNING</span><h2>Everything you need to keep lessons moving.</h2><p>Simple tools help tutors organize their teaching and help students know what comes next.</p></div>
+        <div className="feature-grid">
+          <article className="feature-card"><span className="feature-icon blue"><CalendarDays/></span><h3>Class scheduling</h3><p>Keep upcoming sessions and lesson details easy to find in one shared portal.</p></article>
+          <article className="feature-card"><span className="feature-icon violet"><ClipboardCheck/></span><h3>Homework sharing</h3><p>Share assignments and due dates so students can stay focused between lessons.</p></article>
+          <article className="feature-card"><span className="feature-icon teal"><Upload/></span><h3>Work submissions</h3><p>Students can submit completed work for their tutor to review.</p></article>
+          <article className="feature-card"><span className="feature-icon amber"><MessageSquare/></span><h3>Personal feedback</h3><p>Keep tutor feedback connected to the work it is about.</p></article>
+        </div>
+      </section>
+      <section className="how-section" id="how-it-works">
+        <div className="section-intro"><span className="section-kicker">HOW IT WORKS</span><h2>A clear path from lesson to progress.</h2></div>
+        <div className="steps-grid"><div className="step"><span>01</span><h3>Sign in</h3><p>Access your TutorConnect account through the secure portal.</p></div><div className="step"><span>02</span><h3>Stay organized</h3><p>View classes, assignments and learning updates in one place.</p></div><div className="step"><span>03</span><h3>Keep progressing</h3><p>Submit work, receive feedback and prepare for the next lesson.</p></div></div>
+        <div className="bottom-cta"><div><span className="section-kicker">READY WHEN YOU ARE</span><h2>Your learning space is just a click away.</h2></div><button className="portal-button" onClick={()=>navigate('portal')}>Login to Portal <ArrowRight size={16}/></button></div>
+      </section>
+    </main> : <main className="legal-main">
+      <div className="legal-heading"><span className="section-kicker">TUTORCONNECT</span><h1>{privacy?'Privacy Policy':'Terms of Service'}</h1><p>{privacy?'How information is handled when you use TutorConnect.':'The basic terms for accessing and using the TutorConnect platform.'}</p><small>Last updated: November 20, 2026 · Draft for review</small></div>
+      {privacy?<PrivacyContent/>:<TermsContent/>}
+      <div className="legal-callout"><ShieldCheck size={22}/><p><b>Questions about this document?</b><br/>Contact the TutorConnect operator using the support contact provided to you when you registered. Replace this instruction with a monitored support email before public launch.</p></div>
+      <button className="portal-button legal-login" onClick={()=>navigate('portal')}>Login to Portal <ArrowRight size={16}/></button>
+    </main>}
+    <footer className="public-footer"><div className="footer-top"><button className="public-brand footer-brand" onClick={()=>navigate('home')}><span className="brand-mark"><GraduationCap size={22}/></span><span>TutorConnect</span></button><p>Helping tutors and students stay connected.</p><button className="footer-login" onClick={()=>navigate('portal')}>Login to Portal <ArrowRight size={15}/></button></div><div className="footer-bottom"><span>© {new Date().getFullYear()} TutorConnect. All rights reserved.</span><div><button onClick={()=>navigate('privacy')}>Privacy Policy</button><button onClick={()=>navigate('terms')}>Terms of Service</button></div></div></footer>
+  </div>
+}
+
+function PrivacyContent(){return <article className="legal-content">
+  <p className="legal-notice">This is a starter policy based on the features visible in the current TutorConnect application. The operator must confirm actual data flows, hosting arrangements, Google OAuth scopes, retention periods and contact details before publishing it as a final policy.</p>
+  <h2>1. About this policy</h2><p>This Privacy Policy explains how TutorConnect (“we”, “us” or “the platform”) may collect, use, disclose and protect information when tutors and students use the website and learning portal.</p>
+  <h2>2. Information we handle</h2><p>Depending on how you use the platform, information may include:</p><ul><li>Account email and authentication information managed through Supabase.</li><li>Profile information such as name and account role (tutor or student).</li><li>Learning information such as class titles, scheduled dates, tutor-student associations, homework instructions, due dates and feedback.</li><li>Files uploaded as homework submissions and related file references.</li><li>Information associated with Google Calendar integration, if you choose to connect a Google account.</li><li>Basic technical information that may be recorded by the website host or service providers.</li></ul>
+  <h2>3. How information is used</h2><p>Information is used to create and manage accounts, display the appropriate portal, organize lessons, share assignments, receive submitted work, provide feedback, support Google Calendar features, maintain platform security and respond to support requests.</p>
+  <h2>4. Google Calendar</h2><p>If you connect Google Calendar, Google may ask you to authorize the permissions displayed during consent. Google information should be used only for the features and purposes described at authorization, such as calendar scheduling or meeting functions. You can review or revoke third-party access in your Google Account settings. This section must be checked against the exact OAuth scopes and token-handling implementation before launch.</p>
+  <h2>5. Service providers and sharing</h2><p>Information may be processed by providers supporting the platform, including Supabase for authentication, database and file storage, Google for services you authorize, and the website hosting provider. Relevant learning information may be visible to the tutor or student involved in that tutoring relationship. The operator must confirm its actual practices and applicable legal obligations.</p>
+  <h2>6. Security and retention</h2><p>The platform uses service providers and measures intended to protect information, but no online service can guarantee absolute security. The operator should define and publish specific retention, backup and deletion procedures before public launch.</p>
+  <h2>7. Your choices and requests</h2><p>You may request access to, correction of or deletion of personal information by contacting the TutorConnect operator. Some information may need to be retained where required by law or for legitimate recordkeeping. You can choose not to connect Google Calendar, although calendar-related features may then be unavailable.</p>
+  <h2>8. Children and student accounts</h2><p>Where school-age students use TutorConnect, a parent or legal guardian should review the service and provide any consent required by applicable law. Users should avoid entering unnecessary sensitive information about a student. The operator must establish age-appropriate account, consent and safeguarding practices before accepting accounts from minors.</p>
+  <h2>9. Changes and contact</h2><p>We may update this policy as the platform changes. The updated version will be posted here with a revised date. Before launch, add the responsible legal entity or individual and a real, monitored contact method.</p>
+</article>}
+
+function TermsContent(){return <article className="legal-content">
+  <p className="legal-notice">This is a general starter template, not legal advice. The TutorConnect operator must review it, identify the service provider, set fees and cancellation rules, and obtain appropriate legal advice before relying on it.</p>
+  <h2>1. Agreement and eligibility</h2><p>These Terms apply to access to and use of TutorConnect. By using the platform, you agree to these terms. If you are under the age of majority where you live, a parent or legal guardian must review and agree to the terms on your behalf where required by law.</p>
+  <h2>2. What TutorConnect provides</h2><p>TutorConnect provides online tools that may help tutors and students organize class schedules, share homework, submit completed work and exchange feedback. Features may change over time. TutorConnect is a coordination tool and does not guarantee educational outcomes.</p>
+  <h2>3. Accounts and responsibilities</h2><ul><li>Provide accurate account information and keep sign-in credentials confidential.</li><li>Use only your assigned account and promptly report suspected unauthorized access.</li><li>Do not impersonate another person, access another user’s information or interfere with the platform.</li><li>Tutors are responsible for appropriate permission to add students and share learning materials.</li><li>Students and guardians must submit only materials they are permitted to share.</li></ul>
+  <h2>4. Tutoring arrangements</h2><p>Fees, refunds, cancellations, rescheduling, attendance and tutoring communications are arrangements between the tutor and student or parent/guardian, unless the operator states otherwise in a separate written agreement. TutorConnect does not guarantee a tutor’s qualifications, availability or suitability unless explicitly stated.</p>
+  <h2>5. User content</h2><p>You remain responsible for content you submit, including homework files and learning materials. You must have the rights and permissions needed to upload it. You allow the operator to host, store, display and process that content as reasonably necessary to provide the platform.</p>
+  <h2>6. Acceptable use</h2><p>You must not use TutorConnect for unlawful, harmful, harassing, fraudulent or misleading activity; upload malicious code; bypass access controls; disrupt the service; or misuse another person’s personal information. Access may be restricted where reasonably necessary to protect users or the service.</p>
+  <h2>7. Third-party services</h2><p>TutorConnect may rely on services such as Supabase, Google Calendar and website hosting providers. Those services may have their own terms and privacy policies. Dependent features may be affected by third-party availability or changes.</p>
+  <h2>8. Availability and disclaimers</h2><p>The platform is provided on an “as available” basis. To the extent permitted by applicable law, the operator does not warrant uninterrupted or error-free operation or guarantee a particular learning result. Nothing here limits rights that cannot legally be excluded.</p>
+  <h2>9. Suspension and termination</h2><p>You may stop using the platform at any time. The operator may suspend or terminate access for a breach of these terms, security concerns or discontinuation of the service, subject to applicable law. The operator should provide a clear account-closure and data-handling process.</p>
+  <h2>10. Changes and governing law</h2><p>These terms may be updated by posting a revised version. The operator must specify the governing jurisdiction and dispute process before launch. If a provision is unenforceable, the remaining provisions continue to apply to the extent permitted by law.</p>
+  <h2>11. Contact</h2><p>For questions, contact the TutorConnect operator using the support contact provided when you registered. Add a real, monitored support email and the operator’s legal name here before public launch.</p>
+</article>}
+
 function Stat({label,value,icon}){return <div className="stat"><div className="staticon">{icon}</div><div><strong>{value}</strong><span>{label}</span></div></div>}
 function ClassList({classes}){return <div className="cards">{classes.map(c=><article className="card classcard" key={c.id}><div className="datebox"><b>{new Date(c.starts_at).toLocaleDateString(undefined,{day:'2-digit'})}</b><span>{new Date(c.starts_at).toLocaleDateString(undefined,{month:'short'})}</span></div><div className="classinfo"><h3>{c.title}</h3><p><Clock size={14}/> {new Date(c.starts_at).toLocaleString()}</p>{c.profiles?.full_name&&<p>{c.profiles.full_name}</p>}</div>{c.meet_url?<a className="join" href={c.meet_url} target="_blank" rel="noreferrer">Join Meet <ExternalLink size={14}/></a>:c.meeting_status==='pending'?<span className="muted small">Meet link is being generated…</span>:null}</article>)}{!classes.length&&<Empty text="No classes scheduled yet."/>}</div>}
 function Empty({text}){return <div className="empty"><CalendarDays size={28}/><p>{text}</p></div>}
