@@ -1,5 +1,5 @@
 
-name: Deploy TutorConnect to GitHub Pages
+name: Deploy TutorConnect
 
 on:
   push:
@@ -16,34 +16,79 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+  # 1. Build the React application
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
+          cache: npm
 
       - run: npm install
 
-      - run: npm run build
+      - name: Build React application
+        run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
 
+  # 2. Deploy Supabase database and Edge Functions
+  deploy-supabase:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link Supabase project
+        run: |
+          supabase link \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --password "$SUPABASE_DB_PASSWORD"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+      - name: Apply database migrations
+        run: |
+          supabase db push --linked \
+            --password "$SUPABASE_DB_PASSWORD"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+      - name: Deploy Google Calendar Edge Functions
+        run: |
+          supabase functions deploy google-auth-start --project-ref "$SUPABASE_PROJECT_REF"
+          supabase functions deploy google-oauth-callback --project-ref "$SUPABASE_PROJECT_REF"
+          supabase functions deploy google-calendar-status --project-ref "$SUPABASE_PROJECT_REF"
+          supabase functions deploy create-class --project-ref "$SUPABASE_PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+
+  # 3. Deploy website to GitHub Pages
   deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-
-    runs-on: ubuntu-latest
-    needs: build
 
     steps:
       - id: deployment
