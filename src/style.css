@@ -60,3 +60,4 @@
 .chips button{background:#eef2ff;color:#3157d5;padding:7px 12px;font-size:12px}
 .chips button.active{background:#3157d5;color:#fff}
 .lockednote{font-size:11px!important;color:#758198!important}
+.classcard.ended{opacity:.65}.classcard .tag{margin-right:8px}

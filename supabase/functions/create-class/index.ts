@@ -122,6 +122,7 @@ Deno.serve(async (req) => {
       title,
       starts_at: startsAt.toISOString(),
       meet_url: meetUrl,
+      duration_minutes: duration,
       student_id: student.id,
       tutor_id: tutorId,
       google_event_id: event.id,
