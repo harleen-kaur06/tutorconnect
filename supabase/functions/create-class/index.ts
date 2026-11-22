@@ -50,8 +50,9 @@ Deno.serve(async (req) => {
     }
 
     const { data: student } = await service.from("profiles")
-      .select("id,email,full_name").eq("email", studentEmail).eq("role", "student").maybeSingle();
+      .select("id,email,full_name,approved").eq("email", studentEmail).eq("role", "student").maybeSingle();
     if (!student) return json({ error: "Student account not found. Ask the student to register first." }, 404);
+    if (student.approved === false) return json({ error: "This student has not been approved yet. Approve them in the Students tab first." }, 403);
 
     const { data: connection } = await service.from("google_calendar_connections")
       .select("refresh_token").eq("user_id", tutorId).maybeSingle();

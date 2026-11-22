@@ -38,8 +38,30 @@ Deno.serve(async (req) => {
     if (profile?.role !== "tutor") return json({ connected: false, google_email: null });
 
     const { data: connection } = await service.from("google_calendar_connections")
-      .select("google_email").eq("user_id", data.user.id).maybeSingle();
-    return json({ connected: !!connection, google_email: connection?.google_email || null });
+      .select("google_email,refresh_token").eq("user_id", data.user.id).maybeSingle();
+    if (!connection) return json({ connected: false, healthy: false, drive: false, gmail: false, google_email: null });
+
+    // Check the stored refresh token is still valid and which permissions it carries.
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: getEnv("GOOGLE_CLIENT_ID"),
+        client_secret: getEnv("GOOGLE_CLIENT_SECRET"),
+        refresh_token: connection.refresh_token,
+        grant_type: "refresh_token",
+      }),
+    });
+    const tokenData = await tokenRes.json().catch(() => ({}));
+    const healthy = tokenRes.ok && !!tokenData.access_token;
+    const scope = String(tokenData.scope || "");
+    return json({
+      connected: true,
+      healthy,
+      drive: healthy && scope.includes("auth/drive"),
+      gmail: healthy && scope.includes("gmail.send"),
+      google_email: connection.google_email || null,
+    });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Could not check Google connection." }, 500);
   }

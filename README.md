@@ -40,24 +40,36 @@ A web portal where a tutor and her students stay in sync: **schedule classes wit
 - Email and password sign-up / sign-in through Supabase Auth
 - Two roles: **student** (default for every self-registered account) and **tutor** (promoted manually in the database)
 - Classes show a **Live now** tag while in session. When a class has ended, the Meet link is removed, the class is marked **Completed** and moves to a *Past classes* list (tutor and student)
+- **Forgot password** link on the sign-in card; reset and sign-up confirmation links land back in the portal
+- **Tutor approval of new students**: new sign-ups wait on an approval screen until the tutor approves them in the Students tab (existing accounts were approved automatically)
 - Visible **Sign out** button in the header (and a sidebar icon)
 
 **Tutor**
 - Schedule a class: pick a student from a **dropdown**, date/time and duration. A Google Calendar event with a unique **Google Meet** link is created, and the student receives a calendar invitation by email
 - Create homework: student **dropdown**, title, instructions, due date and an optional attachment (PDF, DOC, DOCX, JPG, PNG, max 10 MB)
-- Homework table with status filters (All / Pending / Submitted / Reviewed)
-- Submissions table with filters (All / Needs review / Reviewed), view each student's file, write feedback and send it
-- Students list, overview statistics, Refresh button
+- Homework table with status filters (All / Pending / Overdue / Submitted / Reviewed), search and pagination (10 per page)
+- Submissions table with filters (All / Needs review / Reviewed), search and pagination, view each student's file, write feedback and send it
+- **Reschedule or cancel** a class (updates or deletes the Google Calendar event, so the student's invitation follows)
+- **Edit or delete** homework until the student has submitted
+- Students list with **Approve / Decline** for new sign-ups, overview statistics, Refresh button
+- Warning banner when the Google connection has expired or is missing permissions
+- **Email notifications** sent from the tutor's Gmail: homework assigned (to student), work submitted (to tutor), feedback sent (to student)
 - Connect Google (Calendar and Drive) button
 
 **Student**
 - See upcoming classes and join the Meet link
 - Homework table: attachment, status, feedback
-- Upload completed work (PDF, DOC, DOCX, JPG, PNG, max 10 MB). The due date disappears once the work is submitted
+- Upload completed work (PDF, DOC, DOCX, JPG, PNG, max 10 MB). The due date disappears once the work is submitted. Past-due homework that is still pending is marked **Overdue** in red
 - Read the tutor's feedback on the same row
 
 **Review lock**
 - After the tutor sends feedback, the submission and the feedback are **locked**: the tutor cannot edit the feedback and the student cannot replace the file. This is enforced in the UI, in the Edge Function and by a database trigger
+
+**Mobile and tablet (app-like)**
+- On phones and tablets (up to 900 px wide) the portal switches to an app layout: a top bar with the page title and an account menu, and a **bottom tab bar** with badges (submissions to review, students waiting, homework to do)
+- Tables become tappable **cards** on phones; filters scroll sideways; forms and menus open as **bottom sheets**; "New class" / "Create homework" become a floating button
+- Touch-friendly sizing, safe-area support for notched phones, 16 px inputs (no iOS zoom)
+- **Installable (PWA):** add it to the home screen (iPhone: Share, Add to Home Screen; Android: browser menu, Install app) and it opens full screen like an app
 
 **Other**
 - Pages refresh automatically every 30 seconds and when the browser tab regains focus
@@ -78,7 +90,9 @@ Browser (React app on GitHub Pages)
             ├── google-calendar-status ... tells the UI whether Google is connected
             ├── create-class ............. creates the Calendar event + Meet link, saves the class
             ├── upload-file .............. saves homework attachments / submissions to the tutor's Google Drive
-            └── download-file ............ streams a Drive file to an authorized student or tutor
+            ├── download-file ............ streams a Drive file to an authorized student or tutor
+            ├── manage ................... tutor-only actions: cancel/reschedule class, edit/delete homework, approve/decline student
+            └── send-notification ........ emails students/tutor through the tutor's Gmail
                          │
                          └──► Google Calendar API, Google Meet, Google Drive API (using the tutor's stored refresh token)
 ```
@@ -107,7 +121,8 @@ Key points:
 ```
 .
 ├── .github/workflows/deploy.yml     # build site, deploy Supabase migrations + functions, publish to Pages
-├── index.html                       # page title / meta
+├── index.html                       # page title, mobile / PWA meta tags
+├── public/                          # manifest.webmanifest, sw.js (no caching), app icons
 ├── package.json
 ├── vite.config.js                   # base: '/tutorconnect/' (must match the repo name)
 ├── src/
@@ -119,14 +134,17 @@ Key points:
     │   ├── 202611200001_google_calendar.sql
     │   ├── 202611200002_drive_storage.sql
     │   ├── 202611200003_lock_reviewed_submissions.sql
-    │   └── 202611200004_class_duration.sql
+    │   ├── 202611200004_class_duration.sql
+    │   └── 202611200005_student_approval.sql
     └── functions/
         ├── google-auth-start/index.ts
         ├── google-oauth-callback/index.ts
         ├── google-calendar-status/index.ts
         ├── create-class/index.ts
         ├── upload-file/index.ts
-        └── download-file/index.ts
+        ├── download-file/index.ts
+        ├── manage/index.ts
+        └── send-notification/index.ts
 ```
 
 ---
@@ -141,8 +159,8 @@ Key points:
 
 | Table | Purpose | Columns used by the app |
 |---|---|---|
-| `profiles` | One row per user | `id` (= auth user id), `email`, `full_name`, `role` (`student` or `tutor`) |
-| `classes` | Scheduled sessions | `id`, `title`, `starts_at`, `meet_url`, `student_id`, `tutor_id`, `google_event_id`, `calendar_event_url`, `meeting_status` (`manual`, `pending`, `ready`), `duration_minutes` (default 60) |
+| `profiles` | One row per user | `id` (= auth user id), `email`, `full_name`, `role` (`student` or `tutor`), `approved` (boolean; students need tutor approval) |
+| `classes` | Scheduled sessions | `id`, `title`, `starts_at`, `meet_url`, `student_id`, `tutor_id`, `google_event_id`, `calendar_event_url`, `meeting_status` (`manual`, `pending`, `ready`, `cancelled`), `duration_minutes` (default 60) |
 | `homework` | Assignments | `id`, `title`, `description`, `due_date`, `student_id`, `tutor_id`, `created_at`, `status`, `file_url` (legacy Supabase Storage path), `drive_file_id`, `file_name`, `file_mime` |
 | `submissions` | Student uploads and feedback | `id`, `homework_id`, `student_id`, `submitted_at`, `file_url` (legacy), `drive_file_id`, `file_name`, `file_mime`, `feedback`, `reviewed_at` |
 | `google_calendar_connections` | Tutor's Google link (server-only) | `user_id`, `google_email`, `refresh_token`, `connected_at`, `updated_at` |
@@ -160,6 +178,7 @@ Migrations live in `supabase/migrations/` and are applied automatically by the G
 |---|---|
 | `202611200001_google_calendar.sql` | Adds `google_event_id`, `calendar_event_url`, `meeting_status` to `classes`. Creates `google_calendar_connections` and `google_oauth_states` with Row Level Security **enabled and no policies**, so only the service role (Edge Functions) can access them |
 | `202611200002_drive_storage.sql` | Adds `drive_file_id`, `file_name`, `file_mime` to `homework` and `submissions` |
+| `202611200005_student_approval.sql` | Adds `profiles.approved` (default false), marks all existing accounts approved, and adds a trigger so browser users can never approve themselves (only the service role / SQL editor can) |
 | `202611200003_lock_reviewed_submissions.sql` | Creates a `BEFORE UPDATE` trigger on `submissions` that raises an error if the row already has `reviewed_at`, locking reviewed submissions and their feedback |
 | `202611200004_class_duration.sql` | Adds `duration_minutes` (default 60) to `classes`. Used to mark a class **Completed** and hide its Meet link once it has ended |
 
@@ -171,11 +190,13 @@ To run one by hand instead: Supabase Dashboard, SQL Editor, paste the file, Run.
 
 | Function | Called by | Who may call it | What it does |
 |---|---|---|---|
-| `google-auth-start` | "Connect Google Calendar" button | Tutor | Stores a one-time `state`, returns the Google consent URL (scopes: `openid email calendar.events drive`) |
+| `google-auth-start` | "Connect Google Calendar" button | Tutor | Stores a one-time `state`, returns the Google consent URL (scopes: `openid email calendar.events drive gmail.send`) |
 | `google-oauth-callback` | Google (redirect) | Anyone with a valid `state` (`verify_jwt = false`) | Exchanges the code for tokens, stores the refresh token, redirects to `APP_URL` with `?google_calendar=connected` (or `error`) |
-| `google-calendar-status` | Portal on load | Signed-in user | Returns `{ connected, google_email }` for tutors |
+| `google-calendar-status` | Portal on load and every 5 minutes | Signed-in user | For the tutor, tests the stored refresh token and returns `{ connected, healthy, drive, gmail, google_email }` so the UI can show a reconnect banner |
 | `create-class` | "Schedule class" form | Tutor | Validates input, creates the Calendar event with a Meet link and email invite, retries briefly for the Meet URL, saves the class with its duration (deletes the event if saving fails) |
 | `upload-file` | Homework form (tutor) and upload button (student) | Tutor (kind `homework`) or the assigned student (kind `submission`) | Validates type (pdf, doc, docx, jpg, jpeg, png) and size (10 MB), creates folders in Drive, uploads the file, inserts the database row (removes the Drive file if the insert fails). Rejects uploads for already-reviewed work |
+| `manage` | Tutor actions in the portal | Tutor only | `class.cancel`, `class.reschedule` (also update/delete the Google Calendar event), `homework.update`, `homework.delete` (only before any submission; also removes the Drive attachment), `student.approve`, `student.decline` (deletes an unapproved account) |
+| `send-notification` | Portal after assigning homework, submitting work, sending feedback | The tutor or the student involved | Sends a plain-text email via the Gmail API from the tutor's connected account. Best effort: failures never block the action |
 | `download-file` | "Open" / "View file" buttons | Tutor or the student the item belongs to | Checks access, fetches the file from Drive with the tutor's token and streams it back |
 
 Functions use the Supabase-provided `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`, which need no setup.
@@ -221,7 +242,7 @@ Never commit `.env` (add it to `.gitignore`). Without these values the app start
 1. Create a project at supabase.com.
 2. Create the base tables, policies and the private `homework-files` bucket (your original `schema.sql`). Then the migrations in this repo add the rest.
 3. **Authentication, Providers:** enable Email.
-4. **Authentication, URL Configuration:** set **Site URL** to `https://harleen-kaur06.github.io/tutorconnect/` and add the same URL to **Redirect URLs**.
+4. **Authentication, URL Configuration:** set **Site URL** to `https://harleen-kaur06.github.io/tutorconnect/` and add the same URL to **Redirect URLs**. Password-reset and sign-up confirmation links return to this URL; the app detects them and opens the portal (or the "Set a new password" screen).
 
 ### Step 2: Create the tutor account
 Every new sign-up is a **student**. Register the tutor in the app, then in the Supabase SQL Editor run:
@@ -231,8 +252,8 @@ update public.profiles set role = 'tutor' where email = 'tutor@example.com';
 
 ### Step 3: Google Cloud
 1. Create (or pick) a project at console.cloud.google.com.
-2. **APIs and Services, Library:** enable **Google Calendar API** and **Google Drive API**.
-3. **OAuth consent screen:** add the scopes `openid`, `email`, `https://www.googleapis.com/auth/calendar.events` and `https://www.googleapis.com/auth/drive`.
+2. **APIs and Services, Library:** enable **Google Calendar API**, **Google Drive API** and **Gmail API**.
+3. **OAuth consent screen:** add the scopes `openid`, `email`, `https://www.googleapis.com/auth/calendar.events` and `https://www.googleapis.com/auth/drive` and `https://www.googleapis.com/auth/gmail.send` (send-only; the app cannot read any email).
    - While the app is in **Testing**, add the tutor's Google account under **Test users**, and note that Google expires refresh tokens after **7 days** (the tutor then has to click Connect again). Publishing the app removes that limit; the Drive scope is a restricted scope, so check Google's verification requirements before going public.
 4. **Credentials, Create credentials, OAuth client ID, Web application.** Under **Authorized redirect URIs** add exactly the value of `GOOGLE_REDIRECT_URI`.
 5. Copy the client ID and secret into the Supabase secrets.
@@ -305,7 +326,10 @@ Harleen Tutoring/                 <- DRIVE_ROOT_FOLDER_ID
 ## Business rules
 
 - New accounts are always students; only a database update makes someone a tutor.
-- Only a tutor can create classes and homework, and only for registered students.
+- Only a tutor can create classes and homework, and only for **approved** students.
+- New students are unapproved until the tutor approves them; unapproved students see a waiting screen and cannot see any data.
+- Homework can be edited or deleted only while it has no submission.
+- A cancelled class is kept in the Past classes list with a Cancelled tag.
 - A student can submit only to homework assigned to them. Before review, they may **replace** the file (the tutor sees the latest upload).
 - Once the tutor sends feedback: feedback is final, the student can no longer replace the file, and the database rejects further changes to that submission.
 - Feedback cannot be empty, and sending asks for confirmation.
@@ -330,6 +354,8 @@ Harleen Tutoring/                 <- DRIVE_ROOT_FOLDER_ID
 | "Google authorization expired or was revoked" | Refresh token expired (7 days in Testing mode) or access was revoked. Reconnect |
 | "Drive folder not found" | Wrong `DRIVE_ROOT_FOLDER_ID`, or Google was connected with an account that cannot edit that folder |
 | Class creation fails | Read the red/blue notice: it now shows the real error. Check the Edge Function logs. Common causes: Google not connected, student not registered, Calendar API disabled |
+| Notification emails are not sent | The tutor must reconnect Google once and tick the Gmail send permission; the Gmail API must be enabled in Google Cloud. Emails come from the tutor's own Gmail address and may land in spam the first time |
+| New student cannot get in | They are waiting for approval: open the Students tab and click Approve |
 | Landing on the public home page after Google connect | `APP_URL` is missing the `#/portal` suffix |
 | Workflow: "Failed to resolve latest Supabase CLI release: rate limit exceeded" | Fixed by using `npx supabase@latest` in the workflow. Re-run failed jobs if it ever recurs |
 | Student sees no attachment on old homework | Legacy files in the Supabase bucket need a storage read policy that allows the assigned student |
@@ -346,7 +372,7 @@ Edge Function logs: Supabase Dashboard, Edge Functions, choose the function, Log
 - [ ] Publish the Google OAuth app (or accept the 7-day reconnect) and complete Google verification if required
 - [ ] Finish the privacy policy and terms (operator name, contact email, retention, guardian consent)
 - [ ] One tutor per deployment: the design assumes a single tutor account
-- [ ] No password reset, tutor invitations, or email notifications for homework yet
+- [ ] Multiple files per submission, recurring classes and group classes are not implemented yet
 - [ ] Add automated tests and rate limiting if opening to the public
 
 ---

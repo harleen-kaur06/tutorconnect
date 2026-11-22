@@ -8,6 +8,12 @@ const url = import.meta.env.VITE_SUPABASE_URL
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY
 const supabase = url && key ? createClient(url, key) : null
 const demo = !supabase
+const authLinkHash = /(access_token=|type=recovery|type=signup|type=magiclink)/.test(window.location.hash)
+const recoveryLink = /type=recovery/.test(window.location.hash)
+let pendingAuthRedirect = authLinkHash
+const PAGE_SIZE = 10
+const toLocalInput=(d)=>{const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`}
+const isApproved=(st)=>st.approved!==false
 const sample = {
   classes: [{id:'c1',title:'Grade 6 Mathematics',starts_at:new Date(Date.now()+86400000).toISOString(),meet_url:'https://meet.google.com/',student_name:'Harleen'}],
   homework: [{id:'h1',title:'Fractions practice',description:'Complete questions 1–10 and upload a photo or PDF.',due_date:new Date(Date.now()+3*86400000).toISOString().slice(0,10),file_url:'',status:'published'}],
@@ -29,10 +35,10 @@ async function fnErrorMessage(error,data){
   return error?.message || 'Request failed.'
 }
 function App(){
-  const [page,setPage]=useState(()=>window.location.hash.replace(/^#\/?/, '') || 'home')
+  const [page,setPage]=useState(()=>authLinkHash?'portal':(window.location.hash.replace(/^#\/?/, '') || 'home'))
   const navigate=(next)=>{ window.location.hash = next === 'home' ? '/' : `/${next}`; setPage(next) }
   useEffect(()=>{
-    const syncPage=()=>setPage(window.location.hash.replace(/^#\/?/, '') || 'home')
+    const syncPage=()=>{ if(pendingAuthRedirect && !window.location.hash.startsWith('#/')) return; setPage(window.location.hash.replace(/^#\/?/, '') || 'home') }
     window.addEventListener('hashchange',syncPage)
     return ()=>window.removeEventListener('hashchange',syncPage)
   },[])
@@ -47,15 +53,23 @@ function App(){
   const [feedback,setFeedback]=useState({}), [hwFilter,setHwFilter]=useState('all'), [subFilter,setSubFilter]=useState('all')
   const [uploading,setUploading]=useState(false)
   const [calendarConnected,setCalendarConnected]=useState(false), [calendarEmail,setCalendarEmail]=useState('')
-  const [connectingCalendar,setConnectingCalendar]=useState(false)
+  const [connectingCalendar,setConnectingCalendar]=useState(false), [gstat,setGstat]=useState(null)
+  const [recovering,setRecovering]=useState(recoveryLink), [newPassword,setNewPassword]=useState('')
+  const [showMenu,setShowMenu]=useState(false), [reschedule,setReschedule]=useState(null), [editHw,setEditHw]=useState(null)
+  const [hwSearch,setHwSearch]=useState(''), [hwPage,setHwPage]=useState(0), [subSearch,setSubSearch]=useState(''), [subPage,setSubPage]=useState(0)
   const displayRole=profile?.role || (demo ? 'tutor' : 'student')
 
   useEffect(()=>{ if(!supabase){setClasses(sample.classes);setHomework(sample.homework);return}
     supabase.auth.getSession().then(({data})=>setSession(data.session))
-    const {data:{subscription}}=supabase.auth.onAuthStateChange((_e,s)=>setSession(s))
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((e,s)=>{ setSession(s); if(e==='PASSWORD_RECOVERY') setRecovering(true) })
     return ()=>subscription.unsubscribe()
   },[])
   useEffect(()=>{ if(session){ loadData(); loadCalendarStatus() } },[session])
+  useEffect(()=>{ if(session&&pendingAuthRedirect){ pendingAuthRedirect=false; navigate('portal') } },[session])
+  useEffect(()=>{ if(!supabase||!session) return
+    const id=setInterval(()=>{ if(document.visibilityState==='visible') loadCalendarStatus() },300000)
+    return ()=>clearInterval(id)
+  },[session])
   useEffect(()=>{ if(!supabase||!session) return
     const tick=()=>{ if(document.visibilityState==='visible') loadData() }
     const id=setInterval(tick,30000)
@@ -78,7 +92,7 @@ function App(){
   async function loadCalendarStatus(){
     if(!supabase || !session) return
     const {data,error}=await supabase.functions.invoke('google-calendar-status')
-    if(!error && data){setCalendarConnected(!!data.connected);setCalendarEmail(data.google_email||'')}
+    if(!error && data){setGstat(data);setCalendarConnected(!!data.connected&&data.healthy!==false);setCalendarEmail(data.google_email||'')}
   }
 
   async function connectGoogleCalendar(){
@@ -113,6 +127,60 @@ function App(){
       : await supabase.auth.signInWithPassword({email,password})
     setBusy(false)
     setNotice(result.error?.message || (action==='signup'?'Student account created. Check your email for confirmation.':'Signed in successfully.'))
+  }
+  async function forgotPassword(){
+    if(!supabase) return
+    if(!email){setNotice('Enter your email above first, then click “Forgot password?”.');return}
+    setBusy(true)
+    const {error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:`${window.location.origin}${import.meta.env.BASE_URL}`})
+    setBusy(false)
+    setNotice(error?.message||'If that email has an account, a password reset link is on its way.')
+  }
+  async function saveNewPassword(e){
+    e.preventDefault()
+    if(newPassword.length<8){setNotice('Use at least 8 characters.');return}
+    setBusy(true)
+    const {error}=await supabase.auth.updateUser({password:newPassword})
+    setBusy(false)
+    if(error){setNotice(error.message);return}
+    setNewPassword('');setRecovering(false);setNotice('Password updated. You are signed in.')
+  }
+  async function notify(type,id){
+    if(!supabase||!id) return
+    try{ await supabase.functions.invoke('send-notification',{body:{type,id}}) }catch{ /* best effort */ }
+  }
+  async function manage(target,action,payload){
+    if(!supabase){setNotice('Not available in demo mode.');return false}
+    setBusy(true)
+    const {data,error}=await supabase.functions.invoke('manage',{body:{target,action,...payload}})
+    setBusy(false)
+    if(error||data?.error){setNotice(await fnErrorMessage(error,data));return false}
+    return true
+  }
+  async function cancelClass(c){
+    if(!window.confirm(`Cancel “${c.title}”? The student's calendar invitation will be cancelled.`)) return
+    if(await manage('class','cancel',{class_id:c.id})){setNotice('Class cancelled.');loadData()}
+  }
+  async function saveReschedule(e){
+    e.preventDefault()
+    const ok=await manage('class','reschedule',{class_id:reschedule.id,starts_at:new Date(reschedule.starts_at).toISOString(),duration_minutes:Number(reschedule.duration_minutes)||60})
+    if(ok){setReschedule(null);setNotice('Class rescheduled. Google Calendar has sent the student an update.');loadData()}
+  }
+  async function deleteHomework(hw){
+    if(!window.confirm(`Delete “${hw.title}”? This cannot be undone.`)) return
+    if(await manage('homework','delete',{homework_id:hw.id})){setNotice('Homework deleted.');loadData()}
+  }
+  async function saveHwEdit(e){
+    e.preventDefault()
+    const ok=await manage('homework','update',{homework_id:editHw.id,title:editHw.title,description:editHw.description,due_date:editHw.due_date||''})
+    if(ok){setEditHw(null);setNotice('Homework updated.');loadData()}
+  }
+  async function approveStudent(st){
+    if(await manage('student','approve',{student_id:st.id})){setNotice(`${st.full_name||st.email} approved.`);loadData()}
+  }
+  async function declineStudent(st){
+    if(!window.confirm(`Decline ${st.full_name||st.email}? Their account will be deleted.`)) return
+    if(await manage('student','decline',{student_id:st.id})){setNotice('Registration declined.');loadData()}
   }
   async function signOut(){if(supabase) await supabase.auth.signOut();setSession(null);setProfile(null)}
   async function addClass(e){
@@ -150,9 +218,11 @@ function App(){
       fd.append('title',hwForm.title); fd.append('description',hwForm.description); fd.append('due_date',hwForm.due_date||'')
       const {data,error}=await supabase.functions.invoke('upload-file',{body:fd})
       if(error||data?.error){setBusy(false);setHwFileError(await fnErrorMessage(error,data));return}
+      notify('homework_assigned',data.id)
     }else{
-      const {error}=await supabase.from('homework').insert({title:hwForm.title,description:hwForm.description,due_date:hwForm.due_date||null,student_id:student.id,tutor_id:session.user.id})
+      const {data:row,error}=await supabase.from('homework').insert({title:hwForm.title,description:hwForm.description,due_date:hwForm.due_date||null,student_id:student.id,tutor_id:session.user.id}).select('id').single()
       failure=error?.message||''
+      if(!error) notify('homework_assigned',row?.id)
     }
     setBusy(false)
     setNotice(failure||'Homework published.')
@@ -171,6 +241,7 @@ function App(){
     setUploading(false)
     if(error||data?.error){setNotice(await fnErrorMessage(error,data));return}
     setNotice('Homework submitted.')
+    notify('submission_received',data.id)
     loadData()
   }
   async function openDriveFile(kind,id,name,mime){
@@ -190,58 +261,82 @@ function App(){
     if(!(feedback[s.id]||'').trim()){setNotice('Write your feedback before sending.');return}
     if(!window.confirm('Send this feedback? It cannot be changed afterwards.')) return
     const {error}=await supabase.from('submissions').update({feedback:feedback[s.id].trim(),reviewed_at:new Date().toISOString()}).eq('id',s.id).is('reviewed_at',null)
-    setNotice(error?.message||'Feedback sent to student.');loadData()
+    setNotice(error?.message||'Feedback sent to student.')
+    if(!error) notify('feedback_sent',s.id)
+    loadData()
   }
   const isTutor=displayRole==='tutor'
   const submittedIds=new Set(subs.map(x=>x.homework_id))
   const subFor=(id)=>subs.find(x=>x.homework_id===id)
   const [now,setNow]=useState(Date.now())
   useEffect(()=>{const id=setInterval(()=>setNow(Date.now()),60000);return ()=>clearInterval(id)},[])
-  const upcoming=classes.filter(c=>classEnd(c)>now)
-  const pastClasses=classes.filter(c=>classEnd(c)<=now).reverse()
+  const isLive=(c)=>c.meeting_status!=='cancelled'&&classEnd(c)>now
+  const upcoming=classes.filter(isLive)
+  const pastClasses=classes.filter(c=>!isLive(c)).reverse()
+  const todayStr=new Date().toLocaleDateString('en-CA')
+  const hwStatus=(hw)=>{const sub=subFor(hw.id);if(sub?.reviewed_at)return 'reviewed';if(sub)return 'submitted';if(hw.due_date&&hw.due_date<todayStr)return 'overdue';return 'pending'}
+  const pendingStudents=students.filter(st=>!isApproved(st)).length
+  const needsReview=subs.filter((x,i)=>subs.findIndex(y=>y.homework_id===x.homework_id)===i&&!x.reviewed_at).length
+  const badges={reviews:needsReview,students:pendingStudents,homework:isTutor?0:homework.filter(h=>!subFor(h.id)).length}
+  const googleIssue=!gstat?'':!gstat.connected?'Connect your Google account to schedule classes and store homework files in Drive.':gstat.healthy===false?'Your Google connection has expired. Reconnect to keep classes and file uploads working.':(gstat.drive===false||gstat.gmail===false)?'Reconnect Google once to allow Drive storage and email notifications.':''
   const nav=[['overview','Overview',BookOpen],['classes','Classes',CalendarDays],['homework','Homework',ClipboardCheck],...(isTutor?[['students','Students',Users],['reviews','Submissions',MessageSquare]]:[])]
   if(page !== 'portal') return <MarketingPage page={page} navigate={navigate}/>
-  if(!session && !demo) return <main className="auth"><section className="authcard"><div className="brand"><GraduationCap/> Harleen Tutoring Portal</div><h1>Learning, connected.</h1><p className="muted">Sign in or create your tutoring account.</p><label>Email<input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@example.com"/></label><label>Password<input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="At least 8 characters"/></label><div className="actions"><button onClick={()=>auth('signin')} disabled={busy}>Sign in</button><button className="secondary" onClick={()=>auth('signup')} disabled={busy}>Create account</button></div>{notice&&<p className="notice">{notice}</p>}</section></main>
-  return <div className="app"><aside className="sidebar"><div className="brand"><GraduationCap/> Harleen Tutoring Portal</div><div className="workspace">{isTutor?'Tutor workspace':'Student workspace'}</div><button className="public-site-link" onClick={()=>navigate('home')}>Visit public website <ExternalLink size={14}/></button><nav>{nav.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon size={18}/>{label}</button>)}</nav><div className="sidebottom"><span className="avatar">{isTutor?'T':'S'}</span><div><b>{profile?.full_name|| (demo?'Demo Tutor':session?.user?.email||'Student')}</b><small>{displayRole}</small></div>{!demo&&<button className="iconbtn" title="Sign out" aria-label="Sign out" onClick={signOut}><LogOut size={17}/></button>}</div></aside>
+  if(recovering && !demo) return <main className="auth"><form className="authcard" onSubmit={saveNewPassword}><div className="brand"><GraduationCap/> Harleen Tutoring Portal</div><h1>Set a new password</h1><label>New password<input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="At least 8 characters" required minLength={8}/></label><button type="submit" disabled={busy}>{busy?'Saving…':'Save password'}</button>{notice&&<p className="notice">{notice}</p>}</form></main>
+  if(!session && !demo) return <main className="auth"><section className="authcard"><div className="brand"><GraduationCap/> Harleen Tutoring Portal</div><h1>Learning, connected.</h1><p className="muted">Sign in or create your tutoring account.</p><label>Email<input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="you@example.com"/></label><label>Password<input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="At least 8 characters"/></label><div className="actions"><button onClick={()=>auth('signin')} disabled={busy}>Sign in</button><button className="secondary" onClick={()=>auth('signup')} disabled={busy}>Create account</button></div><button className="textbtn" onClick={forgotPassword} disabled={busy}>Forgot password?</button>{notice&&<p className="notice">{notice}</p>}</section></main>
+  if(!demo && session && profile && profile.role==='student' && profile.approved===false) return <main className="auth"><section className="authcard"><div className="brand"><GraduationCap/> Harleen Tutoring Portal</div><h1>Waiting for approval</h1><p className="muted">Your account has been created. Your tutor needs to approve it before you can use the portal. Please check back soon.</p><div className="actions"><button onClick={loadData}>Check again</button><button className="secondary" onClick={signOut}>Sign out</button></div></section></main>
+  return <div className="app"><div className="mobilebar"><span className="mobilebrand"><GraduationCap size={22}/></span><h1>{nav.find(n=>n[0]===tab)?.[1]||'Overview'}</h1><button className="mobileavatar" onClick={()=>setShowMenu(true)} aria-label="Account menu">{isTutor?'T':'S'}</button></div><aside className="sidebar"><div className="brand"><GraduationCap/> Harleen Tutoring Portal</div><div className="workspace">{isTutor?'Tutor workspace':'Student workspace'}</div><button className="public-site-link" onClick={()=>navigate('home')}>Visit public website <ExternalLink size={14}/></button><nav>{nav.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon size={18}/>{label}{badges[id]>0&&<em className="badge">{badges[id]}</em>}</button>)}</nav><div className="sidebottom"><span className="avatar">{isTutor?'T':'S'}</span><div><b>{profile?.full_name|| (demo?'Demo Tutor':session?.user?.email||'Student')}</b><small>{displayRole}</small></div>{!demo&&<button className="iconbtn" title="Sign out" aria-label="Sign out" onClick={signOut}><LogOut size={17}/></button>}</div></aside>
   <main className="main"><header><div><div className="eyebrow">YOUR LEARNING SPACE</div><h1>{nav.find(n=>n[0]===tab)?.[1]||'Overview'}</h1></div><div className="header-right"><span className="pill">{demo?'Preview mode':'Connected'}</span>{!demo&&<button className="secondary" onClick={loadData}>Refresh</button>}{!demo&&<button className="secondary" onClick={signOut}><LogOut size={16}/> Sign out</button>}{isTutor&&<><button className="secondary" onClick={connectGoogleCalendar} disabled={connectingCalendar}>{connectingCalendar?'Connecting…':calendarConnected?`Google connected${calendarEmail?' · '+calendarEmail:''}`:'Connect Google Calendar'}</button><button onClick={()=>setShowClass(true)}><Plus size={17}/> Schedule class</button></>}</div></header>
   {notice&&<div className="notice" onClick={()=>setNotice('')}>{notice} <span>×</span></div>}
+  {!demo&&isTutor&&googleIssue&&<div className="banner">{googleIssue} <button className="secondary" onClick={connectGoogleCalendar} disabled={connectingCalendar}>Connect Google</button></div>}
+  {!demo&&isTutor&&pendingStudents>0&&<div className="banner">{pendingStudents} student{pendingStudents>1?'s':''} waiting for your approval. <button className="secondary" onClick={()=>setTab('students')}>Review</button></div>}
   {tab==='overview'&&<><section className="welcome"><div><p className="eyebrow light">WELCOME TO HARLEEN TUTORING PORTAL</p><h2>{isTutor?'Make every lesson count.':'Your next learning step starts here.'}</h2><p>{isTutor?'Keep classes, assignments and student progress in one simple place.':'Find your classes, complete homework and get feedback from your tutor.'}</p></div><GraduationCap size={74}/></section><div className="stats"><Stat label="Upcoming classes" value={upcoming.length} icon={<CalendarDays/>}/><Stat label="Homework" value={homework.length} icon={<ClipboardCheck/>}/><Stat label={isTutor?'Submissions to review':'Feedback received'} value={isTutor?subs.filter(s=>!s.reviewed_at).length:subs.filter(s=>s.reviewed_at).length} icon={<MessageSquare/>}/></div><div className="sectionhead"><h2>Coming up</h2><button className="textbtn" onClick={()=>setTab('classes')}>View all</button></div><ClassList classes={upcoming.slice(0,3)} now={now}/></>}
-  {tab==='classes'&&<><div className="sectionhead"><h2>{isTutor?'Scheduled sessions':'Your sessions'}</h2>{isTutor&&<button onClick={()=>setShowClass(true)}><Plus size={16}/> New class</button>}</div><ClassList classes={upcoming} now={now}/>{pastClasses.length>0&&<><div className="sectionhead"><h2>Past classes</h2></div><ClassList classes={pastClasses} now={now}/></>}</>}
-  {tab==='homework'&&<><div className="sectionhead"><h2>{isTutor?'Assignments shared':'Your assignments'}</h2>{isTutor&&<button onClick={()=>setShowHw(true)}><Plus size={16}/> Create homework</button>}</div>
-  <Chips value={hwFilter} onChange={setHwFilter} options={[['all','All'],['pending','Pending'],['submitted','Submitted'],['reviewed','Reviewed']]}/>
-  {(()=>{const rows=homework.filter(hw=>{const sub=subFor(hw.id);const st=sub?.reviewed_at?'reviewed':sub?'submitted':'pending';return hwFilter==='all'||hwFilter===st})
-  return rows.length?<div className="tablewrap"><table className="dtable"><thead><tr><th>Homework</th>{isTutor&&<th>Student</th>}<th>Due</th><th>Status</th><th>Attachment</th><th>{isTutor?'Submission':'Your work'}</th>{!isTutor&&<th>Feedback</th>}</tr></thead><tbody>
-  {rows.map(hw=>{const sub=subFor(hw.id);const reviewed=!!sub?.reviewed_at
+  {tab==='classes'&&<><div className="sectionhead"><h2>{isTutor?'Scheduled sessions':'Your sessions'}</h2>{isTutor&&<button className="addbtn" onClick={()=>setShowClass(true)}><Plus size={16}/> New class</button>}</div><ClassList classes={upcoming} now={now} isTutor={isTutor} onReschedule={c=>setReschedule({id:c.id,title:c.title,starts_at:toLocalInput(new Date(c.starts_at)),duration_minutes:String(c.duration_minutes||60)})} onCancel={cancelClass}/>{pastClasses.length>0&&<><div className="sectionhead"><h2>Past classes</h2></div><ClassList classes={pastClasses} now={now}/></>}</>}
+  {tab==='homework'&&<><div className="sectionhead"><h2>{isTutor?'Assignments shared':'Your assignments'}</h2>{isTutor&&<button className="addbtn" onClick={()=>setShowHw(true)}><Plus size={16}/> Create homework</button>}</div>
+  <div className="toolbar"><Chips value={hwFilter} onChange={v=>{setHwFilter(v);setHwPage(0)}} options={[['all','All'],['pending','Pending'],['overdue','Overdue'],['submitted','Submitted'],['reviewed','Reviewed']]}/><input className="search" placeholder={isTutor?'Search homework or student…':'Search homework…'} value={hwSearch} onChange={e=>{setHwSearch(e.target.value);setHwPage(0)}}/></div>
+  {(()=>{const q=hwSearch.trim().toLowerCase()
+  const rows=homework.filter(hw=>(hwFilter==='all'||hwFilter===hwStatus(hw))&&(!q||`${hw.title} ${hw.profiles?.full_name||''} ${hw.profiles?.email||''}`.toLowerCase().includes(q)))
+  const pages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE)),pg=Math.min(hwPage,pages-1),shown=rows.slice(pg*PAGE_SIZE,(pg+1)*PAGE_SIZE)
+  return rows.length?<><div className="tablewrap"><table className="dtable"><thead><tr><th>Homework</th>{isTutor&&<th>Student</th>}<th>Due</th><th>Status</th><th>Attachment</th><th>{isTutor?'Submission':'Your work'}</th>{!isTutor&&<th>Feedback</th>}{isTutor&&<th>Actions</th>}</tr></thead><tbody>
+  {shown.map(hw=>{const sub=subFor(hw.id);const st=hwStatus(hw);const reviewed=st==='reviewed'
   return <tr key={hw.id}>
-    <td><b>{hw.title}</b>{hw.description&&<small>{hw.description}</small>}</td>
-    {isTutor&&<td>{hw.profiles?.full_name||hw.profiles?.email||'—'}</td>}
-    <td>{sub?'—':(hw.due_date||'No deadline')}</td>
-    <td><span className={`tag${sub?' done':''}`}>{reviewed?'REVIEWED':sub?'SUBMITTED':'PENDING'}</span></td>
-    <td>{hw.drive_file_id?<button className="secondary" onClick={()=>openDriveFile('homework',hw.id,hw.file_name,hw.file_mime)}>Open <ExternalLink size={13}/></button>:hw.file_url?<a href={hw.file_url} target="_blank" rel="noreferrer">Open <ExternalLink size={13}/></a>:'—'}</td>
-    <td>{sub?.drive_file_id&&<button className="secondary" onClick={()=>openDriveFile('submission',sub.id,sub.file_name,sub.file_mime)}>View file <ExternalLink size={13}/></button>}
+    <td data-label="Homework"><b>{hw.title}</b>{hw.description&&<small>{hw.description}</small>}</td>
+    {isTutor&&<td data-label="Student">{hw.profiles?.full_name||hw.profiles?.email||'—'}</td>}
+    <td data-label="Due">{sub?'—':hw.due_date?<span className={st==='overdue'?'overdue':''}>{hw.due_date}</span>:'No deadline'}</td>
+    <td data-label="Status"><span className={`tag${st==='overdue'?' bad':sub?' done':''}`}>{st.toUpperCase()}</span></td>
+    <td data-label="Attachment">{hw.drive_file_id?<button className="secondary" onClick={()=>openDriveFile('homework',hw.id,hw.file_name,hw.file_mime)}>Open <ExternalLink size={13}/></button>:hw.file_url?<a href={hw.file_url} target="_blank" rel="noreferrer">Open <ExternalLink size={13}/></a>:'—'}</td>
+    <td data-label={isTutor?'Submission':'Your work'}>{sub?.drive_file_id&&<button className="secondary" onClick={()=>openDriveFile('submission',sub.id,sub.file_name,sub.file_mime)}>View file <ExternalLink size={13}/></button>}
       {!isTutor&&reviewed&&<small className="lockednote">Reviewed · locked</small>}
       {!isTutor&&!reviewed&&<label className="upload"><Upload size={14}/>{uploading?'Uploading…':sub?'Replace':'Upload'}<input type="file" accept={FILE_ACCEPT} onChange={e=>{const f=e.target.files?.[0];e.target.value='';submitWork(hw,f)}}/></label>}
       {isTutor&&!sub&&'—'}</td>
-    {!isTutor&&<td>{sub?.feedback||'—'}</td>}
+    {!isTutor&&<td data-label="Feedback">{sub?.feedback||'—'}</td>}
+    {isTutor&&<td data-label="Actions">{sub?<small className="lockednote">Submitted</small>:<div className="rowactions"><button className="secondary" onClick={()=>setEditHw({id:hw.id,title:hw.title,description:hw.description||'',due_date:hw.due_date||''})}>Edit</button><button className="secondary danger" onClick={()=>deleteHomework(hw)}>Delete</button></div>}</td>}
   </tr>})}
-  </tbody></table></div>:<Empty text="No homework to show."/>})()}</>}
-  {tab==='students'&&<><div className="sectionhead"><h2>Your students</h2></div><div className="card">{students.length?students.map(s=><div className="studentrow" key={s.id}><span className="avatar">S</span><div><b>{s.full_name||'Student'}</b><p>{s.email}</p></div></div>):<Empty text="Students appear here after they create an account."/>}</div></>}
+  </tbody></table></div><Pager page={pg} pages={pages} total={rows.length} onChange={setHwPage}/></>:<Empty text="No homework to show."/>})()}</>}
+  {tab==='students'&&<>{(()=>{const pend=students.filter(st=>!isApproved(st)),ok=students.filter(isApproved)
+  return <>{pend.length>0&&<><div className="sectionhead"><h2>Waiting for approval</h2></div><div className="card">{pend.map(st=><div className="studentrow" key={st.id}><span className="avatar">S</span><div><b>{st.full_name||'Student'}</b><p>{st.email}</p></div><div className="rowactions"><button onClick={()=>approveStudent(st)} disabled={busy}>Approve</button><button className="secondary danger" onClick={()=>declineStudent(st)} disabled={busy}>Decline</button></div></div>)}</div></>}
+  <div className="sectionhead"><h2>Your students</h2></div><div className="card">{ok.length?ok.map(st=><div className="studentrow" key={st.id}><span className="avatar">S</span><div><b>{st.full_name||'Student'}</b><p>{st.email}</p></div></div>):<Empty text="Approved students appear here."/>}</div></>})()}</>}
   {tab==='reviews'&&<><div className="sectionhead"><h2>Student submissions</h2></div>
-  <Chips value={subFilter} onChange={setSubFilter} options={[['all','All'],['pending','Needs review'],['done','Reviewed']]}/>
-  {(()=>{const latest=subs.filter((x,i)=>subs.findIndex(y=>y.homework_id===x.homework_id)===i).filter(x=>subFilter==='all'||(subFilter==='done')===!!x.reviewed_at).sort((a,b)=>(!!a.reviewed_at)-(!!b.reviewed_at))
-  return latest.length?<div className="tablewrap"><table className="dtable"><thead><tr><th>Student</th><th>Homework</th><th>Submitted</th><th>File</th><th>Status</th><th>Feedback</th></tr></thead><tbody>
-  {latest.map(x=><tr key={x.id}>
-    <td>{x.profiles?.full_name||x.profiles?.email||'Student'}</td>
-    <td><b>{x.homework?.title||'Homework'}</b></td>
-    <td>{new Date(x.submitted_at).toLocaleDateString()}</td>
-    <td>{x.drive_file_id?<button className="secondary" onClick={()=>openDriveFile('submission',x.id,x.file_name,x.file_mime)}>View file <ExternalLink size={13}/></button>:x.file_url?<a href={x.file_url} target="_blank" rel="noreferrer">View file</a>:'—'}</td>
-    <td><span className={`tag${x.reviewed_at?' done':''}`}>{x.reviewed_at?'REVIEWED':'NEEDS REVIEW'}</span></td>
-    <td>{x.reviewed_at?<><span>{x.feedback}</span><small className="lockednote">Sent {new Date(x.reviewed_at).toLocaleDateString()} · locked</small></>:<><textarea placeholder="Write feedback…" value={feedback[x.id]??''} onChange={e=>setFeedback({...feedback,[x.id]:e.target.value})}/><button onClick={()=>saveFeedback(x)}>Send feedback</button></>}</td>
+  <div className="toolbar"><Chips value={subFilter} onChange={v=>{setSubFilter(v);setSubPage(0)}} options={[['all','All'],['pending','Needs review'],['done','Reviewed']]}/><input className="search" placeholder="Search student or homework…" value={subSearch} onChange={e=>{setSubSearch(e.target.value);setSubPage(0)}}/></div>
+  {(()=>{const q=subSearch.trim().toLowerCase()
+  const latest=subs.filter((x,i)=>subs.findIndex(y=>y.homework_id===x.homework_id)===i).filter(x=>(subFilter==='all'||(subFilter==='done')===!!x.reviewed_at)&&(!q||`${x.homework?.title||''} ${x.profiles?.full_name||''} ${x.profiles?.email||''}`.toLowerCase().includes(q))).sort((a,b)=>(!!a.reviewed_at)-(!!b.reviewed_at))
+  const pages=Math.max(1,Math.ceil(latest.length/PAGE_SIZE)),pg=Math.min(subPage,pages-1),shown=latest.slice(pg*PAGE_SIZE,(pg+1)*PAGE_SIZE)
+  return latest.length?<><div className="tablewrap"><table className="dtable"><thead><tr><th>Student</th><th>Homework</th><th>Submitted</th><th>File</th><th>Status</th><th>Feedback</th></tr></thead><tbody>
+  {shown.map(x=><tr key={x.id}>
+    <td data-label="Student">{x.profiles?.full_name||x.profiles?.email||'Student'}</td>
+    <td data-label="Homework"><b>{x.homework?.title||'Homework'}</b></td>
+    <td data-label="Submitted">{new Date(x.submitted_at).toLocaleDateString()}</td>
+    <td data-label="File">{x.drive_file_id?<button className="secondary" onClick={()=>openDriveFile('submission',x.id,x.file_name,x.file_mime)}>View file <ExternalLink size={13}/></button>:x.file_url?<a href={x.file_url} target="_blank" rel="noreferrer">View file</a>:'—'}</td>
+    <td data-label="Status"><span className={`tag${x.reviewed_at?' done':''}`}>{x.reviewed_at?'REVIEWED':'NEEDS REVIEW'}</span></td>
+    <td data-label="Feedback">{x.reviewed_at?<><span>{x.feedback}</span><small className="lockednote">Sent {new Date(x.reviewed_at).toLocaleDateString()} · locked</small></>:<><textarea placeholder="Write feedback…" value={feedback[x.id]??''} onChange={e=>setFeedback({...feedback,[x.id]:e.target.value})}/><button onClick={()=>saveFeedback(x)}>Send feedback</button></>}</td>
   </tr>)}
-  </tbody></table></div>:<Empty text="No submissions to show."/>})()}</>}
+  </tbody></table></div><Pager page={pg} pages={pages} total={latest.length} onChange={setSubPage}/></>:<Empty text="No submissions to show."/>})()}</>}
   </main>
-  {showClass&&<Modal title="Schedule a class" close={()=>setShowClass(false)}><form onSubmit={addClass}><label>Class title<input required value={classForm.title} onChange={e=>setClassForm({...classForm,title:e.target.value})} placeholder="e.g. Grade 6 Mathematics"/></label><label>Date and time<input required type="datetime-local" min={new Date().toISOString().slice(0,16)} value={classForm.starts_at} onChange={e=>setClassForm({...classForm,starts_at:e.target.value})}/></label>{!demo&&<label>Student<select required value={classForm.student_email} onChange={e=>setClassForm({...classForm,student_email:e.target.value})}><option value="">{students.length?'Select a student…':'No students registered yet'}</option>{students.map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Lesson duration<select value={classForm.duration_minutes} onChange={e=>setClassForm({...classForm,duration_minutes:e.target.value})}><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label><p className="hint">A Google Calendar event and a unique Google Meet link will be created automatically. The student will receive a calendar invitation by email.</p><button type="submit" disabled={busy || (!demo && !calendarConnected)}>{busy?'Creating…':'Create class & Meet link'}</button>{!demo&&!calendarConnected&&<p className="hint">Connect Google Calendar using the button at the top of the dashboard first.</p>}</form></Modal>}
-  {showHw&&<Modal title="Create homework" close={closeHw}><form onSubmit={addHomework}><label>Assignment title<input required value={hwForm.title} onChange={e=>setHwForm({...hwForm,title:e.target.value})} placeholder="e.g. Fractions worksheet"/></label><label>Instructions<textarea required value={hwForm.description} onChange={e=>setHwForm({...hwForm,description:e.target.value})} placeholder="Explain what the student needs to complete…"/></label><label>Due date<input type="date" value={hwForm.due_date} onChange={e=>setHwForm({...hwForm,due_date:e.target.value})}/></label>{!demo&&<label>Student<select required value={hwForm.student_email} onChange={e=>setHwForm({...hwForm,student_email:e.target.value})}><option value="">{students.length?'Select a student…':'No students registered yet'}</option>{students.map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Attach a file (optional)<input type="file" accept={FILE_ACCEPT} onChange={e=>{const f=e.target.files?.[0]||null;if(f){const p=validateFile(f);if(p){setHwFileError(p);setHwFile(null);e.target.value='';return}}setHwFileError('');setHwFile(f)}}/></label><p className="hint">PDF, DOC, DOCX, JPG or PNG · max 10 MB · saved to your Google Drive{hwFile?` · Selected: ${hwFile.name}`:''}</p>{hwFileError&&<p className="hint" style={{color:'#b3261e'}}>{hwFileError}</p>}<button type="submit" disabled={busy}>{busy?'Publishing…':'Publish homework'}</button></form></Modal>}
+  <nav className="bottomnav" aria-label="Main">{nav.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} onClick={()=>{setTab(id);window.scrollTo({top:0})}}><span className="navicon"><Icon size={22}/>{badges[id]>0&&<em className="badge">{badges[id]}</em>}</span><span className="navtext">{label}</span></button>)}</nav>
+  {showClass&&<Modal title="Schedule a class" close={()=>setShowClass(false)}><form onSubmit={addClass}><label>Class title<input required value={classForm.title} onChange={e=>setClassForm({...classForm,title:e.target.value})} placeholder="e.g. Grade 6 Mathematics"/></label><label>Date and time<input required type="datetime-local" min={toLocalInput(new Date())} value={classForm.starts_at} onChange={e=>setClassForm({...classForm,starts_at:e.target.value})}/></label>{!demo&&<label>Student<select required value={classForm.student_email} onChange={e=>setClassForm({...classForm,student_email:e.target.value})}><option value="">{students.filter(isApproved).length?'Select a student…':'No approved students yet'}</option>{students.filter(isApproved).map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Lesson duration<select value={classForm.duration_minutes} onChange={e=>setClassForm({...classForm,duration_minutes:e.target.value})}><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label><p className="hint">A Google Calendar event and a unique Google Meet link will be created automatically. The student will receive a calendar invitation by email.</p><button type="submit" disabled={busy || (!demo && !calendarConnected)}>{busy?'Creating…':'Create class & Meet link'}</button>{!demo&&!calendarConnected&&<p className="hint">Connect Google Calendar using the button at the top of the dashboard first.</p>}</form></Modal>}
+  {showHw&&<Modal title="Create homework" close={closeHw}><form onSubmit={addHomework}><label>Assignment title<input required value={hwForm.title} onChange={e=>setHwForm({...hwForm,title:e.target.value})} placeholder="e.g. Fractions worksheet"/></label><label>Instructions<textarea required value={hwForm.description} onChange={e=>setHwForm({...hwForm,description:e.target.value})} placeholder="Explain what the student needs to complete…"/></label><label>Due date<input type="date" value={hwForm.due_date} onChange={e=>setHwForm({...hwForm,due_date:e.target.value})}/></label>{!demo&&<label>Student<select required value={hwForm.student_email} onChange={e=>setHwForm({...hwForm,student_email:e.target.value})}><option value="">{students.filter(isApproved).length?'Select a student…':'No approved students yet'}</option>{students.filter(isApproved).map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Attach a file (optional)<input type="file" accept={FILE_ACCEPT} onChange={e=>{const f=e.target.files?.[0]||null;if(f){const p=validateFile(f);if(p){setHwFileError(p);setHwFile(null);e.target.value='';return}}setHwFileError('');setHwFile(f)}}/></label><p className="hint">PDF, DOC, DOCX, JPG or PNG · max 10 MB · saved to your Google Drive{hwFile?` · Selected: ${hwFile.name}`:''}</p>{hwFileError&&<p className="hint" style={{color:'#b3261e'}}>{hwFileError}</p>}<button type="submit" disabled={busy}>{busy?'Publishing…':'Publish homework'}</button></form></Modal>}
+  {showMenu&&<Modal title="Account" close={()=>setShowMenu(false)}><div className="sheetlist"><div className="sheetuser"><span className="avatar">{isTutor?'T':'S'}</span><div><b>{profile?.full_name||session?.user?.email||(demo?'Demo Tutor':'Student')}</b><small>{displayRole}{isTutor&&calendarEmail?` · ${calendarEmail}`:''}</small></div></div>{!demo&&<button className="secondary" onClick={()=>{setShowMenu(false);loadData()}}>Refresh</button>}{isTutor&&!demo&&<button className="secondary" onClick={connectGoogleCalendar} disabled={connectingCalendar}>{calendarConnected?'Reconnect Google (Calendar, Drive, Email)':'Connect Google'}</button>}<button className="secondary" onClick={()=>{setShowMenu(false);navigate('home')}}>Visit public website</button>{!demo&&<button className="secondary danger" onClick={()=>{setShowMenu(false);signOut()}}><LogOut size={16}/> Sign out</button>}<p className="hint">Tip: add this app to your home screen. iPhone: Share, then Add to Home Screen. Android: browser menu, then Install app.</p></div></Modal>}
+  {reschedule&&<Modal title="Reschedule class" close={()=>setReschedule(null)}><form onSubmit={saveReschedule}><p className="hint"><b>{reschedule.title}</b></p><label>New date and time<input required type="datetime-local" min={toLocalInput(new Date())} value={reschedule.starts_at} onChange={e=>setReschedule({...reschedule,starts_at:e.target.value})}/></label><label>Lesson duration<select value={reschedule.duration_minutes} onChange={e=>setReschedule({...reschedule,duration_minutes:e.target.value})}><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option><option value="90">90 minutes</option><option value="120">120 minutes</option></select></label><p className="hint">Google Calendar sends the student an updated invitation. The Meet link stays the same.</p><button type="submit" disabled={busy}>{busy?'Saving…':'Save new time'}</button></form></Modal>}
+  {editHw&&<Modal title="Edit homework" close={()=>setEditHw(null)}><form onSubmit={saveHwEdit}><label>Assignment title<input required value={editHw.title} onChange={e=>setEditHw({...editHw,title:e.target.value})}/></label><label>Instructions<textarea value={editHw.description} onChange={e=>setEditHw({...editHw,description:e.target.value})}/></label><label>Due date<input type="date" value={editHw.due_date} onChange={e=>setEditHw({...editHw,due_date:e.target.value})}/></label><button type="submit" disabled={busy}>{busy?'Saving…':'Save changes'}</button></form></Modal>}
   </div>
 }
 
@@ -330,10 +425,12 @@ function TermsContent(){return <article className="legal-content">
   <h2>11. Contact</h2><p>For questions, contact the Harleen Tutoring Portal operator using the support contact provided when you registered. Add a real, monitored support email and the operator’s legal name here before public launch.</p>
 </article>}
 
+function Pager({page,pages,total,onChange}){return pages>1?<div className="pager"><span>{total} items · Page {page+1} of {pages}</span><div><button className="secondary" disabled={page===0} onClick={()=>onChange(page-1)}>Previous</button><button className="secondary" disabled={page>=pages-1} onClick={()=>onChange(page+1)}>Next</button></div></div>:null}
 function Chips({value,onChange,options}){return <div className="chips">{options.map(([id,label])=><button key={id} className={value===id?'active':''} onClick={()=>onChange(id)}>{label}</button>)}</div>}
 const classEnd=(c)=>new Date(c.starts_at).getTime()+(Number(c.duration_minutes)||60)*60000
 function Stat({label,value,icon}){return <div className="stat"><div className="staticon">{icon}</div><div><strong>{value}</strong><span>{label}</span></div></div>}
-function ClassList({classes,now=Date.now()}){return <div className="cards">{classes.map(c=>{const ended=classEnd(c)<=now,live=!ended&&new Date(c.starts_at).getTime()<=now;return <article className={`card classcard${ended?' ended':''}`} key={c.id}><div className="datebox"><b>{new Date(c.starts_at).toLocaleDateString(undefined,{day:'2-digit'})}</b><span>{new Date(c.starts_at).toLocaleDateString(undefined,{month:'short'})}</span></div><div className="classinfo"><h3>{c.title}</h3><p><Clock size={14}/> {new Date(c.starts_at).toLocaleString()}</p>{c.profiles?.full_name&&<p>{c.profiles.full_name}</p>}</div>{ended?<span className="tag done">COMPLETED</span>:c.meet_url?<>{live&&<span className="tag done">LIVE NOW</span>}<a className="join" href={c.meet_url} target="_blank" rel="noreferrer">Join Meet <ExternalLink size={14}/></a></>:c.meeting_status==='pending'?<span className="muted small">Meet link is being generated…</span>:null}</article>})}{!classes.length&&<Empty text="No classes scheduled yet."/>}</div>}
+function ClassList({classes,now=Date.now(),isTutor=false,onReschedule,onCancel}){return <div className="cards">{classes.map(c=>{const cancelled=c.meeting_status==='cancelled',ended=cancelled||classEnd(c)<=now,live=!ended&&new Date(c.starts_at).getTime()<=now;return <article className={`card classcard${ended?' ended':''}`} key={c.id}><div className="datebox"><b>{new Date(c.starts_at).toLocaleDateString(undefined,{day:'2-digit'})}</b><span>{new Date(c.starts_at).toLocaleDateString(undefined,{month:'short'})}</span></div><div className="classinfo"><h3>{c.title}</h3><p><Clock size={14}/> {new Date(c.starts_at).toLocaleString()}</p>{c.profiles?.full_name&&<p>{c.profiles.full_name}</p>}</div>{ended?<span className={`tag${cancelled?' bad':' done'}`}>{cancelled?'CANCELLED':'COMPLETED'}</span>:c.meet_url?<>{live&&<span className="tag done">LIVE NOW</span>}<a className="join" href={c.meet_url} target="_blank" rel="noreferrer">Join Meet <ExternalLink size={14}/></a></>:c.meeting_status==='pending'?<span className="muted small">Meet link is being generated…</span>:null}{isTutor&&!ended&&<div className="classactions"><button className="secondary" onClick={()=>onReschedule(c)}>Reschedule</button><button className="secondary danger" onClick={()=>onCancel(c)}>Cancel</button></div>}</article>})}{!classes.length&&<Empty text="No classes scheduled yet."/>}</div>}
 function Empty({text}){return <div className="empty"><CalendarDays size={28}/><p>{text}</p></div>}
 function Modal({title,close,children}){return <div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&close()}><section className="modal"><div className="modalhead"><h2>{title}</h2><button className="iconbtn" onClick={close}>×</button></div>{children}</section></div>}
 createRoot(document.getElementById('root')).render(<App/>)
+if('serviceWorker' in navigator && import.meta.env.PROD){window.addEventListener('load',()=>{navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(()=>{})})}
