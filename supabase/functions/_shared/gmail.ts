@@ -35,5 +35,8 @@ export async function sendGmail(db: any, tutorId: string, to: string, subject: s
     headers: { Authorization: `Bearer ${t.access_token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ raw }),
   });
-  if (!res.ok) throw new Error(`Gmail error (${res.status}).`);
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 300);
+    throw new Error(`Gmail error (${res.status}): ${detail}`);
+  }
 }

@@ -1,5 +1,5 @@
 [functions.google-oauth-callback]
 verify_jwt = false
-# Add to supabase/config.toml (keep your existing entries):
+
 [functions.notify-registration]
 verify_jwt = false

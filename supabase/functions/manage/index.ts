@@ -74,6 +74,7 @@ Deno.serve(async (req) => {
         if (error) throw error;
         // Welcome email (best effort: approval still succeeds if email fails)
         let welcome = "skipped";
+        let welcomeError = "";
         if (st.email && !st.welcome_sent_at) {
           try {
             await sendGmail(service, userId, st.email, "Welcome to Harleen Tutoring",
@@ -82,9 +83,9 @@ Deno.serve(async (req) => {
               `I'll be in touch shortly to talk about your child's goals and the best way to support them.\n\nHarleen`);
             await service.from("profiles").update({ welcome_sent_at: new Date().toISOString() }).eq("id", id);
             welcome = "sent";
-          } catch { welcome = "failed"; }
+          } catch (e) { welcome = "failed"; welcomeError = e instanceof Error ? e.message : "Unknown error"; }
         }
-        return json({ ok: true, welcome });
+        return json({ ok: true, welcome, welcomeError });
       }
       if (st.approved) return json({ error: "Approved students can't be removed here." }, 400);
       const { error } = await service.auth.admin.deleteUser(id);

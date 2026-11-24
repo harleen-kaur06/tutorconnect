@@ -160,7 +160,7 @@ function App(){
     const {data,error}=await supabase.functions.invoke('manage',{body:{target,action,...payload}})
     setBusy(false)
     if(error||data?.error){setNotice(await fnErrorMessage(error,data));return false}
-    return true
+    return data||true
   }
   async function cancelClass(c){
     if(!window.confirm(`Cancel “${c.title}”? The student's calendar invitation will be cancelled.`)) return
@@ -181,7 +181,8 @@ function App(){
     if(ok){setEditHw(null);setNotice('Homework updated.');loadData()}
   }
   async function approveStudent(st){
-    if(await manage('student','approve',{student_id:st.id})){setNotice(`${st.full_name||st.email} approved.`);loadData()}
+    const r=await manage('student','approve',{student_id:st.id})
+    if(r){setNotice(`${st.full_name||st.email} approved.`+(r.welcome==='sent'?' Welcome email sent.':r.welcome==='failed'?` Welcome email NOT sent: ${r.welcomeError||'unknown error'}`:''));loadData()}
   }
   async function declineStudent(st){
     if(!window.confirm(`Decline ${st.full_name||st.email}? Their account will be deleted.`)) return
