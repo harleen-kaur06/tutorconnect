@@ -19,13 +19,19 @@ const sample = {
   homework: [{id:'h1',title:'Fractions practice',description:'Complete questions 1–10 and upload a photo or PDF.',due_date:new Date(Date.now()+3*86400000).toISOString().slice(0,10),file_url:'',status:'published'}],
   submissions: []
 }
-const ALLOWED_EXT=['pdf','doc','docx','jpg','jpeg','png']
-const FILE_ACCEPT='.pdf,.doc,.docx,.jpg,.jpeg,.png'
-const MAX_FILE_MB=10
+const ALLOWED_EXT=['pdf','doc','docx','ppt','pptx','jpg','jpeg','png']
+const FILE_ACCEPT='.pdf,.doc,.docx,.ppt,.pptx,.jpg,.jpeg,.png'
+const MAX_FILE_MB=10, MAX_FILES=5, MAX_TOTAL_MB=30
 function validateFile(file){
   const ext=(file.name.split('.').pop()||'').toLowerCase()
-  if(!ALLOWED_EXT.includes(ext)) return 'Only PDF, DOC, DOCX, JPG and PNG files are allowed.'
+  if(!ALLOWED_EXT.includes(ext)) return 'Only PDF, Word, PowerPoint, JPG and PNG files are allowed.'
   if(file.size>MAX_FILE_MB*1024*1024) return `File is too large. Maximum size is ${MAX_FILE_MB} MB.`
+  return ''
+}
+function validateFiles(list){
+  if(list.length>MAX_FILES) return `You can attach up to ${MAX_FILES} files.`
+  for(const f of list){const p=validateFile(f); if(p) return `${f.name}: ${p}`}
+  if(list.reduce((n,f)=>n+f.size,0)>MAX_TOTAL_MB*1024*1024) return `The files are too large together. Maximum total is ${MAX_TOTAL_MB} MB.`
   return ''
 }
 const safeName=(n)=>n.replace(/[^A-Za-z0-9._-]+/g,'_')
@@ -50,7 +56,7 @@ function App(){
   const [email,setEmail]=useState(''), [password,setPassword]=useState('')
   const [authMode,setAuthMode]=useState(()=>/^#\/?register/.test(window.location.hash)?'register':'signin'), [reg,setReg]=useState({parent:'',child:'',grade:'',needs:''})
   const [classForm,setClassForm]=useState({title:'',starts_at:'',student_email:'',duration_minutes:'60'})
-  const [hwForm,setHwForm]=useState({title:'',description:'',due_date:'',student_email:''}), [hwFile,setHwFile]=useState(null), [hwFileError,setHwFileError]=useState('')
+  const [hwForm,setHwForm]=useState({title:'',description:'',due_date:'',student_email:''}), [hwFiles,setHwFiles]=useState([]), [hwFileError,setHwFileError]=useState('')
   const [feedback,setFeedback]=useState({}), [hwFilter,setHwFilter]=useState('all'), [subFilter,setSubFilter]=useState('all')
   const [uploading,setUploading]=useState(false)
   const [calendarConnected,setCalendarConnected]=useState(false), [calendarEmail,setCalendarEmail]=useState('')
@@ -108,7 +114,7 @@ function App(){
     const {data:p}=await supabase.from('profiles').select('*').eq('id',session.user.id).single()
     setProfile(p)
     const {data:c}=await supabase.from('classes').select('*, profiles:student_id(full_name,email)').order('starts_at')
-    const {data:h}=await supabase.from('homework').select('*, profiles:student_id(full_name,email)').order('created_at',{ascending:false})
+    const {data:h}=await supabase.from('homework').select('*, profiles:student_id(full_name,email), homework_files(*)').order('created_at',{ascending:false})
     const {data:s}=await supabase.from('submissions').select('*, homework(title), profiles:student_id(full_name,email)').order('submitted_at',{ascending:false})
     setClasses(c||[])
     const hwWithLinks = await Promise.all((h||[]).map(async item => { if (!item.file_url) return item; const {data:link}=await supabase.storage.from('homework-files').createSignedUrl(item.file_url, 3600); return {...item, file_url: link?.signedUrl || ''} }))
@@ -207,20 +213,20 @@ function App(){
     setClassForm({title:'',starts_at:'',student_email:'',duration_minutes:'60'})
     await loadData()
   }
-  function closeHw(){setShowHw(false);setHwForm({title:'',description:'',due_date:'',student_email:''});setHwFile(null);setHwFileError('')}
+  function closeHw(){setShowHw(false);setHwForm({title:'',description:'',due_date:'',student_email:''});setHwFiles([]);setHwFileError('')}
   async function addHomework(e){
     e.preventDefault()
-    if(hwFile){const problem=validateFile(hwFile); if(problem){setHwFileError(problem);return}}
+    if(hwFiles.length){const problem=validateFiles(hwFiles); if(problem){setHwFileError(problem);return}}
     if(!supabase){setHomework([...homework,{...hwForm,id:crypto.randomUUID(),status:'published',file_url:''}]);closeHw();setNotice('Demo homework published.');return}
     if(!hwForm.student_email){setNotice('Select a student.');return}
     setBusy(true)
     const {data:student}=await supabase.from('profiles').select('id').eq('email',hwForm.student_email).single()
     if(!student){setBusy(false);setNotice('Student not found. Ask the student to create an account first.');return}
     let failure=''
-    if(hwFile){
-      // File is saved to the tutor's Google Drive by the upload-file Edge Function, which also creates the homework row.
+    if(hwFiles.length){
+      // Files are saved to the tutor's Google Drive by the upload-file Edge Function, which also creates the homework row.
       const fd=new FormData()
-      fd.append('kind','homework'); fd.append('file',hwFile); fd.append('student_id',student.id)
+      fd.append('kind','homework'); hwFiles.forEach(f=>fd.append('file',f)); fd.append('student_id',student.id)
       fd.append('title',hwForm.title); fd.append('description',hwForm.description); fd.append('due_date',hwForm.due_date||'')
       const {data,error}=await supabase.functions.invoke('upload-file',{body:fd})
       if(error||data?.error){setBusy(false);setHwFileError(await fnErrorMessage(error,data));return}
@@ -309,7 +315,7 @@ function App(){
     {isTutor&&<td data-label="Student">{hw.profiles?.full_name||hw.profiles?.email||'—'}</td>}
     <td data-label="Due">{sub?'—':hw.due_date?<span className={st==='overdue'?'overdue':''}>{hw.due_date}</span>:'No deadline'}</td>
     <td data-label="Status"><span className={`tag${st==='overdue'?' bad':sub?' done':''}`}>{st.toUpperCase()}</span></td>
-    <td data-label="Attachment">{hw.drive_file_id?<button className="secondary" onClick={()=>openDriveFile('homework',hw.id,hw.file_name,hw.file_mime)}>Open <ExternalLink size={13}/></button>:hw.file_url?<a href={hw.file_url} target="_blank" rel="noreferrer">Open <ExternalLink size={13}/></a>:'—'}</td>
+    <td data-label="Attachment">{(hw.homework_files?.length||hw.drive_file_id||hw.file_url)?<div style={{display:'flex',flexDirection:'column',gap:'6px',alignItems:'flex-start'}}>{(hw.homework_files||[]).map(f=><button key={f.id} className="secondary" onClick={()=>openDriveFile('homework_file',f.id,f.file_name,f.file_mime)}>{f.file_name} <ExternalLink size={13}/></button>)}{hw.drive_file_id?<button className="secondary" onClick={()=>openDriveFile('homework',hw.id,hw.file_name,hw.file_mime)}>Open <ExternalLink size={13}/></button>:hw.file_url?<a href={hw.file_url} target="_blank" rel="noreferrer">Open <ExternalLink size={13}/></a>:null}</div>:'—'}</td>
     <td data-label={isTutor?'Submission':'Your work'}>{sub?.drive_file_id&&<button className="secondary" onClick={()=>openDriveFile('submission',sub.id,sub.file_name,sub.file_mime)}>View file <ExternalLink size={13}/></button>}
       {!isTutor&&reviewed&&<small className="lockednote">Reviewed · locked</small>}
       {!isTutor&&!reviewed&&<label className="upload"><Upload size={14}/>{uploading?'Uploading…':sub?'Replace':'Upload'}<input type="file" accept={FILE_ACCEPT} onChange={e=>{const f=e.target.files?.[0];e.target.value='';submitWork(hw,f)}}/></label>}
@@ -339,7 +345,7 @@ function App(){
   </main>
   <nav className="bottomnav" aria-label="Main">{nav.map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} onClick={()=>{setTab(id);window.scrollTo({top:0})}}><span className="navicon"><Icon size={22}/>{badges[id]>0&&<em className="badge">{badges[id]}</em>}</span><span className="navtext">{label}</span></button>)}</nav>
   {showClass&&<Modal title="Schedule a class" close={()=>setShowClass(false)}><form onSubmit={addClass}><label>Class title<input required value={classForm.title} onChange={e=>setClassForm({...classForm,title:e.target.value})} placeholder="e.g. Grade 6 Mathematics"/></label><label>Date and time<input required type="datetime-local" min={toLocalInput(new Date())} value={classForm.starts_at} onChange={e=>setClassForm({...classForm,starts_at:e.target.value})}/></label>{!demo&&<label>Student<select required value={classForm.student_email} onChange={e=>setClassForm({...classForm,student_email:e.target.value})}><option value="">{students.filter(isApproved).length?'Select a student…':'No approved students yet'}</option>{students.filter(isApproved).map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Lesson duration<select value={classForm.duration_minutes} onChange={e=>setClassForm({...classForm,duration_minutes:e.target.value})}><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label><p className="hint">A Google Calendar event and a unique Google Meet link will be created automatically. The student will receive a calendar invitation by email.</p><button type="submit" disabled={busy || (!demo && !calendarConnected)}>{busy?'Creating…':'Create class & Meet link'}</button>{!demo&&!calendarConnected&&<p className="hint">Connect Google Calendar using the button at the top of the dashboard first.</p>}</form></Modal>}
-  {showHw&&<Modal title="Create homework" close={closeHw}><form onSubmit={addHomework}><label>Assignment title<input required value={hwForm.title} onChange={e=>setHwForm({...hwForm,title:e.target.value})} placeholder="e.g. Fractions worksheet"/></label><label>Instructions<textarea required value={hwForm.description} onChange={e=>setHwForm({...hwForm,description:e.target.value})} placeholder="Explain what the student needs to complete…"/></label><label>Due date<input type="date" value={hwForm.due_date} onChange={e=>setHwForm({...hwForm,due_date:e.target.value})}/></label>{!demo&&<label>Student<select required value={hwForm.student_email} onChange={e=>setHwForm({...hwForm,student_email:e.target.value})}><option value="">{students.filter(isApproved).length?'Select a student…':'No approved students yet'}</option>{students.filter(isApproved).map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Attach a file (optional)<input type="file" accept={FILE_ACCEPT} onChange={e=>{const f=e.target.files?.[0]||null;if(f){const p=validateFile(f);if(p){setHwFileError(p);setHwFile(null);e.target.value='';return}}setHwFileError('');setHwFile(f)}}/></label><p className="hint">PDF, DOC, DOCX, JPG or PNG · max 10 MB · saved to your Google Drive{hwFile?` · Selected: ${hwFile.name}`:''}</p>{hwFileError&&<p className="hint" style={{color:'#b3261e'}}>{hwFileError}</p>}<button type="submit" disabled={busy}>{busy?'Publishing…':'Publish homework'}</button></form></Modal>}
+  {showHw&&<Modal title="Create homework" close={closeHw}><form onSubmit={addHomework}><label>Assignment title<input required value={hwForm.title} onChange={e=>setHwForm({...hwForm,title:e.target.value})} placeholder="e.g. Fractions worksheet"/></label><label>Instructions<textarea required value={hwForm.description} onChange={e=>setHwForm({...hwForm,description:e.target.value})} placeholder="Explain what the student needs to complete…"/></label><label>Due date<input type="date" value={hwForm.due_date} onChange={e=>setHwForm({...hwForm,due_date:e.target.value})}/></label>{!demo&&<label>Student<select required value={hwForm.student_email} onChange={e=>setHwForm({...hwForm,student_email:e.target.value})}><option value="">{students.filter(isApproved).length?'Select a student…':'No approved students yet'}</option>{students.filter(isApproved).map(st=><option key={st.id} value={st.email}>{st.full_name?`${st.full_name} (${st.email})`:st.email}</option>)}</select></label>}<label>Attach files (optional)<input type="file" multiple accept={FILE_ACCEPT} onChange={e=>{const picked=Array.from(e.target.files||[]);e.target.value='';if(!picked.length)return;const next=[...hwFiles,...picked];const p=validateFiles(next);if(p){setHwFileError(p);return}setHwFileError('');setHwFiles(next)}}/></label>{hwFiles.length>0&&<ul style={{margin:'6px 0',paddingLeft:'18px'}}>{hwFiles.map((f,i)=><li key={f.name+i}>{f.name} <button type="button" className="textbtn" onClick={()=>{setHwFiles(hwFiles.filter((_,j)=>j!==i));setHwFileError('')}}>Remove</button></li>)}</ul>}<p className="hint">PDF, Word, PowerPoint, JPG or PNG · up to {MAX_FILES} files · max {MAX_FILE_MB} MB each · saved to your Google Drive</p>{hwFileError&&<p className="hint" style={{color:'#b3261e'}}>{hwFileError}</p>}<button type="submit" disabled={busy}>{busy?'Publishing…':'Publish homework'}</button></form></Modal>}
   {showMenu&&<Modal title="Account" close={()=>setShowMenu(false)}><div className="sheetlist"><div className="sheetuser"><span className="avatar">{isTutor?'T':'S'}</span><div><b>{profile?.full_name||session?.user?.email||(demo?'Demo Tutor':'Student')}</b><small>{displayRole}{isTutor&&calendarEmail?` · ${calendarEmail}`:''}</small></div></div>{!demo&&<button className="secondary" onClick={()=>{setShowMenu(false);loadData()}}>Refresh</button>}{isTutor&&!demo&&<button className="secondary" onClick={connectGoogleCalendar} disabled={connectingCalendar}>{calendarConnected?'Reconnect Google (Calendar, Drive, Email)':'Connect Google'}</button>}<button className="secondary" onClick={()=>{setShowMenu(false);navigate('home')}}>Visit public website</button>{!demo&&<button className="secondary danger" onClick={()=>{setShowMenu(false);signOut()}}><LogOut size={16}/> Sign out</button>}<p className="hint">Tip: add this app to your home screen. iPhone: Share, then Add to Home Screen. Android: browser menu, then Install app.</p></div></Modal>}
   {reschedule&&<Modal title="Reschedule class" close={()=>setReschedule(null)}><form onSubmit={saveReschedule}><p className="hint"><b>{reschedule.title}</b></p><label>New date and time<input required type="datetime-local" min={toLocalInput(new Date())} value={reschedule.starts_at} onChange={e=>setReschedule({...reschedule,starts_at:e.target.value})}/></label><label>Lesson duration<select value={reschedule.duration_minutes} onChange={e=>setReschedule({...reschedule,duration_minutes:e.target.value})}><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option><option value="90">90 minutes</option><option value="120">120 minutes</option></select></label><p className="hint">Google Calendar sends the student an updated invitation. The Meet link stays the same.</p><button type="submit" disabled={busy}>{busy?'Saving…':'Save new time'}</button></form></Modal>}
   {editHw&&<Modal title="Edit homework" close={()=>setEditHw(null)}><form onSubmit={saveHwEdit}><label>Assignment title<input required value={editHw.title} onChange={e=>setEditHw({...editHw,title:e.target.value})}/></label><label>Instructions<textarea value={editHw.description} onChange={e=>setEditHw({...editHw,description:e.target.value})}/></label><label>Due date<input type="date" value={editHw.due_date} onChange={e=>setEditHw({...editHw,due_date:e.target.value})}/></label><button type="submit" disabled={busy}>{busy?'Saving…':'Save changes'}</button></form></Modal>}

@@ -23,11 +23,15 @@ const ALLOWED: Record<string, string> = {
   pdf: "application/pdf",
   doc: "application/msword",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   png: "image/png",
 };
-const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_BYTES = 10 * 1024 * 1024; // per file
+const MAX_FILES = 5; // per homework
+const MAX_TOTAL_BYTES = 30 * 1024 * 1024; // per request
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const PERMISSION_MSG =
   "Google Drive permission is missing or expired. The tutor must click “Connect Google Calendar” again and allow Drive access.";
@@ -118,13 +122,19 @@ Deno.serve(async (req) => {
 
     const form = await req.formData();
     const kind = String(form.get("kind") || "");
-    const file = form.get("file");
-    if (!(file instanceof File)) return json({ error: "Choose a file to upload." }, 400);
+    let files = form.getAll("file").filter((f): f is File => f instanceof File);
+    if (!files.length) return json({ error: "Choose a file to upload." }, 400);
+    if (kind === "submission") files = files.slice(0, 1); // submissions are one file
+    if (files.length > MAX_FILES) return json({ error: `You can attach up to ${MAX_FILES} files.` }, 400);
 
-    const ext = (file.name.split(".").pop() || "").toLowerCase();
-    const mime = ALLOWED[ext];
-    if (!mime) return json({ error: "Only PDF, DOC, DOCX, JPG and PNG files are allowed." }, 400);
-    if (file.size > MAX_BYTES) return json({ error: "File is too large. Maximum size is 10 MB." }, 400);
+    let totalBytes = 0;
+    for (const f of files) {
+      const ext = (f.name.split(".").pop() || "").toLowerCase();
+      if (!ALLOWED[ext]) return json({ error: `${f.name}: only PDF, Word, PowerPoint, JPG and PNG files are allowed.` }, 400);
+      if (f.size > MAX_BYTES) return json({ error: `${f.name}: file is too large. Maximum size is 10 MB per file.` }, 400);
+      totalBytes += f.size;
+    }
+    if (totalBytes > MAX_TOTAL_BYTES) return json({ error: "The files are too large together. Maximum total is 30 MB." }, 400);
 
     let tutorId = "";
     let studentId = "";
@@ -171,36 +181,59 @@ Deno.serve(async (req) => {
       studentFolder,
     );
 
-    const driveName = `${new Date().toISOString().slice(0, 10)} - ${cleanName(file.name)}`;
-    const driveFileId = await uploadToDrive(token, typeFolder, driveName, mime, new Uint8Array(await file.arrayBuffer()));
+    const uploaded: { drive_file_id: string; file_name: string; file_mime: string }[] = [];
+    const removeUploaded = async () => {
+      for (const u of uploaded) {
+        try {
+          await fetch(`https://www.googleapis.com/drive/v3/files/${u.drive_file_id}?supportsAllDrives=true`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        } catch { /* ignore */ }
+      }
+    };
 
-    const fileInfo = { drive_file_id: driveFileId, file_name: file.name, file_mime: mime };
-    const { data: row, error: saveError } = kind === "homework"
-      ? await service.from("homework").insert({
-        title: hwFields.title,
-        description: hwFields.description,
-        due_date: hwFields.due_date || null,
-        student_id: studentId,
-        tutor_id: tutorId,
-        ...fileInfo,
-      }).select("id").single()
-      : await service.from("submissions").insert({
+    try {
+      const day = new Date().toISOString().slice(0, 10);
+      for (const f of files) {
+        const ext = (f.name.split(".").pop() || "").toLowerCase();
+        const mime = ALLOWED[ext];
+        const id = await uploadToDrive(token, typeFolder, `${day} - ${cleanName(f.name)}`, mime, new Uint8Array(await f.arrayBuffer()));
+        uploaded.push({ drive_file_id: id, file_name: f.name, file_mime: mime });
+      }
+
+      if (kind === "homework") {
+        const { data: row, error: hwError } = await service.from("homework").insert({
+          title: hwFields.title,
+          description: hwFields.description,
+          due_date: hwFields.due_date || null,
+          student_id: studentId,
+          tutor_id: tutorId,
+        }).select("id").single();
+        if (hwError) throw hwError;
+        const { error: filesError } = await service.from("homework_files")
+          .insert(uploaded.map((u) => ({ homework_id: row.id, ...u })));
+        if (filesError) {
+          await service.from("homework").delete().eq("id", row.id);
+          throw filesError;
+        }
+        return json({ id: row.id, files: uploaded, message: "Homework published." });
+      }
+
+      const first = uploaded[0];
+      const { data: row, error: saveError } = await service.from("submissions").insert({
         homework_id: homeworkId,
         student_id: studentId,
         file_url: "",
-        ...fileInfo,
+        ...first,
       }).select("id").single();
-
-    if (saveError) {
-      await fetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?supportsAllDrives=true`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      throw saveError;
+      if (saveError) throw saveError;
+      return json({ id: row.id, ...first, message: "Homework submitted." });
+    } catch (e) {
+      await removeUploaded();
+      throw e;
     }
-
-    return json({ id: row.id, ...fileInfo, message: kind === "homework" ? "Homework published." : "Homework submitted." });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Upload failed." }, 500);
+    return json({ error: error instanceof Error ? error.message : (error as { message?: string })?.message || "Upload failed." }, 500);
   }
 });

@@ -27,6 +27,14 @@ const toBase64 = (bytes: Uint8Array) => {
 const toBase64Url = (bytes: Uint8Array) => toBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const headerSafe = (s: string) => s.replace(/[\r\n]+/g, " ").trim();
 
+// From header with a display name, e.g. "Harleen Tutoring" <me@gmail.com>
+function fromHeader(name: string, email: string) {
+  const clean = name.replace(/[\r\n"\\]+/g, " ").trim();
+  if (!clean) return email;
+  if (/^[\x20-\x7e]+$/.test(clean)) return `"${clean}" <${email}>`;
+  return `=?UTF-8?B?${toBase64(new TextEncoder().encode(clean))}?= <${email}>`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -103,7 +111,7 @@ Deno.serve(async (req) => {
 
     const enc = new TextEncoder();
     const mime = [
-      `From: ${headerSafe(conn.google_email)}`,
+      `From: ${fromHeader(Deno.env.get("SENDER_NAME") || "Harleen Tutoring", headerSafe(conn.google_email))}`,
       `To: ${headerSafe(recipient.email)}`,
       `Subject: =?UTF-8?B?${toBase64(enc.encode(headerSafe(subject)))}?=`,
       "MIME-Version: 1.0",

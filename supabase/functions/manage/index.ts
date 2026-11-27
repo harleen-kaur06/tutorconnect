@@ -116,13 +116,17 @@ Deno.serve(async (req) => {
       }
 
       // delete (attachments are removed best-effort)
-      if (hw.drive_file_id) {
+      const { data: extraFiles } = await service.from("homework_files").select("drive_file_id").eq("homework_id", id);
+      const driveIds = [hw.drive_file_id, ...(extraFiles || []).map((f: { drive_file_id: string }) => f.drive_file_id)].filter(Boolean);
+      if (driveIds.length) {
         try {
           const token = await googleAccessToken(service, userId);
-          await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(hw.drive_file_id)}?supportsAllDrives=true`, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${token}` },
-          });
+          for (const fileId of driveIds) {
+            await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` },
+            });
+          }
         } catch { /* ignore */ }
       }
       if (hw.file_url) {

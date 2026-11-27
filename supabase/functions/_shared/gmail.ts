@@ -1,4 +1,15 @@
 // Sends a plain-text email from the tutor's connected Google account.
+// Builds a From header with a display name, e.g. "Harleen Tutoring" <me@gmail.com>
+function fromHeader(name: string, email: string) {
+  const clean = name.replace(/[\r\n"\\]+/g, " ").trim();
+  if (!clean) return email;
+  if (/^[\x20-\x7e]+$/.test(clean)) return `"${clean}" <${email}>`;
+  const bytes = new TextEncoder().encode(clean);
+  let bin = "";
+  bytes.forEach((x) => (bin += String.fromCharCode(x)));
+  return `=?UTF-8?B?${btoa(bin)}?= <${email}>`;
+}
+
 // deno-lint-ignore no-explicit-any
 export async function sendGmail(db: any, tutorId: string, to: string, subject: string, text: string) {
   const { data: conn } = await db.from("google_calendar_connections")
@@ -20,7 +31,7 @@ export async function sendGmail(db: any, tutorId: string, to: string, subject: s
   const b64 = (b: Uint8Array) => { let s = ""; b.forEach((x) => (s += String.fromCharCode(x))); return btoa(s); };
   const safe = (v: string) => v.replace(/[\r\n]+/g, " ").trim();
   const mime = [
-    `From: ${safe(conn.google_email)}`,
+    `From: ${fromHeader(Deno.env.get("SENDER_NAME") || "Harleen Tutoring", safe(conn.google_email))}`,
     `To: ${safe(to)}`,
     `Subject: =?UTF-8?B?${b64(enc.encode(safe(subject)))}?=`,
     "MIME-Version: 1.0",

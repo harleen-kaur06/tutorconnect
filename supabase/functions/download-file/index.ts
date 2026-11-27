@@ -44,6 +44,16 @@ Deno.serve(async (req) => {
         driveFileId = hw.drive_file_id || "";
         allowed = userId === hw.student_id || userId === hw.tutor_id;
       }
+    } else if (kind === "homework_file") {
+      const { data: f } = await service.from("homework_files").select("homework_id,drive_file_id").eq("id", id).maybeSingle();
+      if (f) {
+        const { data: hw } = await service.from("homework").select("student_id,tutor_id").eq("id", f.homework_id).maybeSingle();
+        if (hw) {
+          tutorId = hw.tutor_id;
+          driveFileId = f.drive_file_id || "";
+          allowed = userId === hw.student_id || userId === hw.tutor_id;
+        }
+      }
     } else if (kind === "submission") {
       const { data: sub } = await service.from("submissions").select("student_id,homework_id,drive_file_id").eq("id", id).maybeSingle();
       if (sub) {
